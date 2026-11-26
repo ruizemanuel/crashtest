@@ -308,54 +308,104 @@ test("upstream-key replaces an Idempotency-Key tied to ctx.callId with an op-key
   );
 });
 
+/** A tool whose `execute` makes `call` and a fetch to a host without idempotency keys. */
+function stripeTool(call: string): string {
+  return toolSource(`  async execute({ to, orderId }, ctx) {
+    ${call}
+    await fetch("https://api.acme-notify.test/v1/messages", { method: "POST" });
+    return { done: true };
+  },`);
+}
+
 test("upstream-key adds the header, the headers or the init a Stripe fetch is missing", (t) => {
-  const source = toolSource(`  async execute({ to, orderId }, ctx) {
-    await fetch(\`https://api.stripe.com/v1/refunds\`, { method: "POST" });
-    await fetch("https://api.stripe.com/v1/customers");
-    await fetch(\`https://api.stripe.com/v1/charges/\${orderId}/capture\`, {
+  const key = "opKey(ctx, { to, orderId })";
+  const cases: Record<string, [before: string, after: string]> = {
+    init: [
+      `await fetch(\`https://api.stripe.com/v1/refunds\`, { method: "POST" });`,
+      `await fetch(\`https://api.stripe.com/v1/refunds\`, { method: "POST", headers: { "Idempotency-Key": ${key} } });`,
+    ],
+    bare: [
+      `await fetch("https://api.stripe.com/v1/customers");`,
+      `await fetch("https://api.stripe.com/v1/customers", { headers: { "Idempotency-Key": ${key} } });`,
+    ],
+    replaced: [
+      `await fetch(\`https://api.stripe.com/v1/charges/\${orderId}/capture\`, {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded",
         "idempotency-key": to,
       },
-    });
-    await fetch("https://api.stripe.com/v1/payouts", {
-      headers: {
-        accept: "application/json",
-      },
-    });
-    await fetch("https://api.acme-notify.test/v1/messages", { method: "POST" });
-    return { done: true };
-  },`);
-  const app = tempApp(t, { "agent/tools/refund.ts": source });
-
-  const result = applyUpstreamKey(app, tool("refund"), IDENTITY);
-
-  const key = "opKey(ctx, { to, orderId })";
-  assert.equal(
-    appliedText(app, result, "agent/tools/refund.ts", source),
-    toolSource(
-      `  async execute({ to, orderId }, ctx) {
-    await fetch(\`https://api.stripe.com/v1/refunds\`, { method: "POST", headers: { "Idempotency-Key": ${key} } });
-    await fetch("https://api.stripe.com/v1/customers", { headers: { "Idempotency-Key": ${key} } });
-    await fetch(\`https://api.stripe.com/v1/charges/\${orderId}/capture\`, {
+    });`,
+      `await fetch(\`https://api.stripe.com/v1/charges/\${orderId}/capture\`, {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded",
         "Idempotency-Key": ${key},
       },
-    });
-    await fetch("https://api.stripe.com/v1/payouts", {
+    });`,
+    ],
+    appended: [
+      `await fetch("https://api.stripe.com/v1/payouts", {
+      headers: {
+        accept: "application/json",
+      },
+    });`,
+      `await fetch("https://api.stripe.com/v1/payouts", {
       headers: {
         accept: "application/json",
         "Idempotency-Key": ${key},
       },
-    });
-    await fetch("https://api.acme-notify.test/v1/messages", { method: "POST" });
-    return { done: true };
-  },`,
+    });`,
+    ],
+  };
+  const app = tempApp(t, Object.fromEntries(Object.entries(cases).map(([name, [before]]) => [`agent/tools/${name}.ts`, stripeTool(before)])));
+
+  for (const [name, [before, after]] of Object.entries(cases)) {
+    const rel = `agent/tools/${name}.ts`;
+    assert.equal(
+      appliedText(app, applyUpstreamKey(app, tool(name), IDENTITY), rel, stripeTool(before)),
+      stripeTool(after).replace(`import { z } from "zod";\n`, `import { z } from "zod";\nimport { opKey } from "../lib/crashtest-idempotency";\n`),
+      name,
+    );
+  }
+});
+
+test("upstream-key keys a single fetch inside if and try blocks", (t) => {
+  const execute = (headers: string): string => `  async execute(input, ctx) {
+    try {
+      if (input.to !== "") {
+        const response = await fetch("https://api.resend.com/emails", { method: "POST"${headers} });
+        return (await response.json()) as Record<string, unknown>;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  },`;
+  const source = toolSource(execute(""));
+  const app = tempApp(t, { "agent/tools/email.ts": source });
+
+  const result = applyUpstreamKey(app, tool("email"), IDENTITY);
+
+  assert.equal(
+    appliedText(app, result, "agent/tools/email.ts", source),
+    toolSource(
+      execute(`, headers: { "Idempotency-Key": opKey(ctx, { to: input.to, orderId: input.orderId }) }`),
       `import { opKey } from "../lib/crashtest-idempotency";\n`,
     ),
+  );
+});
+
+test("upstream-key keys a fetch inside the function that ledger-guard hands to once", (t) => {
+  // That function runs at most once per op-key, so the key is never reused with another body.
+  const app = tempApp(t, { "agent/tools/email.ts": RESEND });
+  const guarded = applyLedgerGuard(app, tool("email"), IDENTITY).files[0]!.after;
+
+  const result = applyUpstreamKey(app, tool("email"), IDENTITY);
+
+  assert.equal(
+    appliedText(app, result, "agent/tools/email.ts", guarded),
+    guarded.replace(`"Idempotency-Key": ctx.callId`, `"Idempotency-Key": opKey(ctx, { to: input.to, orderId: input.orderId })`),
   );
 });
 
@@ -383,6 +433,37 @@ const NOT_APPLIED: { name: string; source: string; codemod: typeof applyLedgerGu
     source: RESEND.replace(`headers: { "content-type": "application/json", "Idempotency-Key": ctx.callId },`, "headers: new Headers(),"),
     codemod: applyUpstreamKey,
     reason: "a fetch call to api.resend.com passes headers that are not an object literal",
+  },
+  {
+    name: "two fetch calls to idempotency-capable hosts",
+    source: toolSource(`  async execute(input, ctx) {
+    await fetch("https://api.stripe.com/v1/refunds", { method: "POST" });
+    await fetch("https://api.resend.com/emails", { method: "POST" });
+    return { done: true };
+  },`),
+    codemod: applyUpstreamKey,
+    reason: "several fetch calls to idempotency-capable hosts share one identity",
+  },
+  {
+    name: "a fetch to an idempotency-capable host in a for-of loop",
+    source: toolSource(`  async execute(input, ctx) {
+    for (const to of input.to.split(",")) {
+      await fetch("https://api.resend.com/emails", { method: "POST", body: JSON.stringify({ to }) });
+    }
+    return { done: true };
+  },`),
+    codemod: applyUpstreamKey,
+    reason: "fetch call to an idempotency-capable host inside a loop or callback",
+  },
+  {
+    name: "a fetch to an idempotency-capable host in a map callback",
+    source: toolSource(`  async execute(input, ctx) {
+    const to = input.to.split(",");
+    await Promise.all(to.map(async (address) => fetch("https://api.resend.com/emails", { method: "POST", body: address })));
+    return { done: true };
+  },`),
+    codemod: applyUpstreamKey,
+    reason: "fetch call to an idempotency-capable host inside a loop or callback",
   },
   {
     name: "a destructured context",

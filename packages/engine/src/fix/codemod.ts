@@ -58,15 +58,21 @@ export function applyLedgerGuard(appDir: string, tool: ToolInfo, identity: strin
   });
 }
 
-/** Sends an op-key as the Idempotency-Key of every fetch in `execute` to a host that honors the header. */
+/**
+ * Sends an op-key as the Idempotency-Key of the fetch in `execute` to a host that honors the header. There must
+ * be exactly one such call and it must run at most once per run of `execute`: the provider rejects a key reused
+ * with a different body, so a second call, or the same call in a loop or a callback, cannot share the op-key.
+ */
 export function applyUpstreamKey(appDir: string, tool: ToolInfo, identity: string[]): CodemodResult {
   return runCodemod(appDir, tool, (source) => {
     assertNamesFree(source, UPSTREAM_KEY_NAMES);
     const fn = findExecute(source.sf);
-    const calls = idempotentFetchCalls(fn);
-    if (calls.length === 0) notApplied("no fetch call to an idempotency-capable host");
+    const [call, ...others] = idempotentFetchCalls(fn);
+    if (!call) notApplied("no fetch call to an idempotency-capable host");
+    if (others.length > 0) notApplied("several fetch calls to idempotency-capable hosts share one identity");
+    if (mayRepeat(source, call.call, fn)) notApplied("fetch call to an idempotency-capable host inside a loop or callback");
     const binding = bindIdentity(source, fn, identity);
-    return [...binding.edits, ...calls.map((call) => keyHeader(source, call, binding.key)), importEdit(source, UPSTREAM_KEY_NAMES)];
+    return [...binding.edits, keyHeader(source, call, binding.key), importEdit(source, UPSTREAM_KEY_NAMES)];
   });
 }
 
@@ -507,6 +513,39 @@ function idempotentFetchCalls(fn: Execute): FetchCall[] {
     const host = literalHost(url);
     return host !== null && hostSupportsIdempotency(host) ? [{ call, host }] : [];
   });
+}
+
+const LOOP_KINDS = new Set([
+  SyntaxKind.ForStatement,
+  SyntaxKind.ForOfStatement,
+  SyntaxKind.ForInStatement,
+  SyntaxKind.WhileStatement,
+  SyntaxKind.DoStatement,
+]);
+
+/**
+ * Whether `node` can run more than once per run of `execute`: inside a loop, or inside a function nested in
+ * `execute` (a callback such as `.map(async …)`). The function ledger-guard hands to the helper's `once` is the
+ * exception: it runs at most once per op-key.
+ */
+function mayRepeat(source: Source, node: Node, fn: Execute): boolean {
+  for (let ancestor = node.getParent(); ancestor && ancestor !== fn; ancestor = ancestor.getParent()) {
+    if (LOOP_KINDS.has(ancestor.getKind())) return true;
+    if (Node.isFunctionLikeDeclaration(ancestor) && !isOnceCallback(source, ancestor)) return true;
+  }
+  return false;
+}
+
+function isOnceCallback(source: Source, node: Node): boolean {
+  const once = source.helperImports.get("once");
+  const call = node.getParent();
+  return (
+    once !== undefined &&
+    call !== undefined &&
+    Node.isCallExpression(call) &&
+    call.getExpression().getText() === once &&
+    call.getArguments().at(-1) === node
+  );
 }
 
 /** The host of a URL written as a literal, or as a template literal whose fixed start holds the whole host. */
