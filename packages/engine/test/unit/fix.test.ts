@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { EngineError } from "../../src/errors.ts";
 import type { CodemodFile } from "../../src/fix/codemod.ts";
-import { applyFix, fixSummary, isImprovement, patchOf, ratingsAtCommit, type FixCandidate, type FixOutcome } from "../../src/fix/fix.ts";
+import { applyFix, fixSummary, isImprovement, patchOf, usableRatings, type FixCandidate, type FixOutcome } from "../../src/fix/fix.ts";
 import type { CellId, CellVerdict, Report, ToolRating, VerdictKind } from "../../src/types.ts";
 import { verdict } from "./builders.ts";
 
@@ -213,12 +213,12 @@ test("an empty identity is named as such in the trade-off", () => {
 
 // ---------------------------------------------------------------- report
 
-function report(commit: string | null, tools: ToolRating[]): Report {
+function report(commit: string | null, tools: ToolRating[], dirty = false): Report {
   return {
     schemaVersion: 1,
     engine: { name: "eve-crashtest", version: "0.1.0" },
     createdAt: "2026-12-02T10:30:00.000Z",
-    target: { name: "zoo", commit, dirty: false },
+    target: { name: "zoo", commit, dirty },
     eve: { version: "1.5.0", capabilities: { replayNever: false } },
     lab: { platform: "linux", node: "24.2.0", cells: 30 },
     agent: { stars: 1, evaluated: tools.length, total: tools.length },
@@ -226,10 +226,12 @@ function report(commit: string | null, tools: ToolRating[]): Report {
   };
 }
 
-test("a report made at the current commit supplies the ratings by tool", () => {
+const CLEAN_APP = { commit: "abc1234", dirty: false };
+
+test("a clean report made at the commit of a clean app supplies the ratings by tool", () => {
   const naive = rating(1, { "post-effect-fast-stable": "dup" });
   const readonly = rating(null, {}, { tool: "readonly" });
-  const found = ratingsAtCommit(report("abc1234", [naive, readonly]), "abc1234");
+  const found = usableRatings(report("abc1234", [naive, readonly]), CLEAN_APP);
   assert.ok("ratings" in found, JSON.stringify(found));
   assert.deepEqual([...found.ratings.keys()], ["naive", "readonly"]);
   assert.equal(found.ratings.get("naive"), naive);
@@ -237,7 +239,15 @@ test("a report made at the current commit supplies the ratings by tool", () => {
 
 test("a report made at another commit, or without one, is not used", () => {
   const tools = [rating(1, {})];
-  assert.deepEqual(ratingsAtCommit(report("abc1234", tools), "def5678"), { unusable: "it was made at commit abc1234 and the app is at def5678" });
-  assert.deepEqual(ratingsAtCommit(report(null, tools), "def5678"), { unusable: "it records no commit" });
-  assert.deepEqual(ratingsAtCommit(report("abc1234", tools), null), { unusable: "the app has no git commit to compare it with" });
+  assert.deepEqual(usableRatings(report("abc1234", tools), { commit: "def5678", dirty: false }), { unusable: "it was made at commit abc1234 and the app is at def5678" });
+  assert.deepEqual(usableRatings(report(null, tools), CLEAN_APP), { unusable: "it records no commit" });
+  assert.deepEqual(usableRatings(report("abc1234", tools), { commit: null, dirty: false }), { unusable: "the app has no git commit to compare it with" });
+});
+
+test("a report made on uncommitted changes is not used", () => {
+  assert.deepEqual(usableRatings(report("abc1234", [rating(1, {})], true), CLEAN_APP), { unusable: "it was made on uncommitted changes" });
+});
+
+test("a report is not used while the app has uncommitted changes", () => {
+  assert.deepEqual(usableRatings(report("abc1234", [rating(1, {})]), { commit: "abc1234", dirty: true }), { unusable: "the app has uncommitted changes now" });
 });

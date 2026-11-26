@@ -194,10 +194,12 @@ const FIVE_STAR_NAIVE = {
   cells: [{ cellId: "post-effect-fast-stable", kind: "clean" }],
 };
 
-test("fix takes the rating from a report made at the app's commit", async (t) => {
+test("fix takes the rating from a clean report made at the commit of a clean app", async (t) => {
   const zoo = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "zoo");
   const head = spawnSync("git", ["-C", zoo, "rev-parse", "--short=7", "HEAD"], { encoding: "utf8" });
   if (head.status !== 0) return t.skip("the zoo is not in a git work tree");
+  const status = spawnSync("git", ["-C", zoo, "status", "--porcelain", "--", ".", ":(exclude,literal).crashtest"], { encoding: "utf8" });
+  if (status.stdout.trim() !== "") return t.skip("the zoo has uncommitted changes");
   const out = stdout();
   const err = stderr();
   assert.equal(await main(["fix", "--tool", "naive", "--app", zoo, "--report", reportFile(t, head.stdout.trim(), [FIVE_STAR_NAIVE])]), 0, err.text());
@@ -205,7 +207,7 @@ test("fix takes the rating from a report made at the app's commit", async (t) =>
   assert.doesNotMatch(err.text(), /ignored/);
 });
 
-test("fix ignores a report made at another commit, with one line on stderr", async (t) => {
+test("fix ignores the report of an app without a git commit, with one line on stderr", async (t) => {
   const app = missingApp(t);
   const file = reportFile(t, "0000000", [FIVE_STAR_NAIVE]);
   const err = stderr();

@@ -8,7 +8,7 @@ import { audit, auditLane, planAudit, reportFiles, type AuditPlan } from "./audi
 import { loadConfig, type CrashtestConfig } from "./config.ts";
 import { killAllTracked } from "./driver/process.ts";
 import { ConfigError, EngineError } from "./errors.ts";
-import { applyFix, fixSummary, fixTool, isVerdictKind, ratingsAtCommit } from "./fix/fix.ts";
+import { applyFix, fixSummary, fixTool, isVerdictKind, usableRatings } from "./fix/fix.ts";
 import { engineVersion } from "./paths.ts";
 import { renderBadge } from "./report/badge.ts";
 import { readGit } from "./report/build.ts";
@@ -263,7 +263,7 @@ function readReport(path: string): Report {
   return parsed;
 }
 
-/** The ratings `fix` starts from: those of the report, when it was made at the commit the app is at. */
+/** The ratings `fix` starts from: those of the report, read once before any tool is fixed, when they describe the app as it is. */
 function reportRatings(path: string, app: string): Map<string, ToolRating> | undefined {
   const report = readReport(path);
   const tools: unknown = report.tools;
@@ -274,7 +274,7 @@ function reportRatings(path: string, app: string): Map<string, ToolRating> | und
       throw new EngineError(`${path} has a tool rating crashtest cannot read: ${name}`);
     }
   });
-  const found = ratingsAtCommit({ ...report, tools: tools as ToolRating[] }, readGit(app, join(app, ".crashtest")).commit);
+  const found = usableRatings({ ...report, tools: tools as ToolRating[] }, readGit(app, join(app, ".crashtest")));
   if ("ratings" in found) return found.ratings;
   progress(`[crashtest] the report ${path} is ignored: ${found.unusable}`);
   return undefined;

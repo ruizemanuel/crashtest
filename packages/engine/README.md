@@ -136,9 +136,12 @@ crashtest fix (--tool <name> | --all) [--identity <a,b>] [--report <file>] [--ap
 Proposes a patch for a tool that a crash makes run twice, and judges it the way the tool was judged: by running
 its lane again, this time on a patched lab copy of the app. The app's files change only with `--apply`.
 
-1. **Before.** The tool's rating comes from a fresh lane, or from `--report <file>` when that report was made at
-   the commit the app is at now. A report made at another commit (or without one) is ignored, with one line on
-   stderr, and the tools are rated with a fresh lane. A tool rated ★★★★★ or not evaluated gets no candidates.
+1. **Before.** The tool's rating comes from a fresh lane, or from `--report <file>` when that report describes the
+   code the app has now: it was made at the commit the app is at, without uncommitted changes (its `target.dirty`
+   is false), and the app has no uncommitted changes now (changes under `.crashtest/` do not count). Otherwise the
+   report is ignored, with one line on stderr that says why, and every tool is rated with a fresh lane. The report
+   is read once, before any tool is fixed, so `--apply` on one tool does not make it unusable for the next. A tool
+   rated ★★★★★ or not evaluated gets no candidates.
 2. **Candidates.** Each strategy is a codemod applied to its own lab copy, `.crashtest/lab-fix-<strategy>`, which
    is then overlaid and discovered like any lab; the tool's lane runs on it, and the lab is removed afterwards. Both
    codemods add the helper `agent/lib/crashtest-idempotency.ts` (unless the app already has that file) and build

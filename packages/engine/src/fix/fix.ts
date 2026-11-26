@@ -13,6 +13,7 @@ import { freeTextFields, identityFields } from "../inputs.ts";
 import { createLab } from "../lab.ts";
 import { runLane } from "../lane.ts";
 import { applyOverlay } from "../overlay.ts";
+import type { GitFacts } from "../report/build.ts";
 import { starString } from "../report/format.ts";
 import type { Report, ToolInfo, ToolRating, VerdictKind } from "../types.ts";
 import { applyLedgerGuard, applyUpstreamKey, insideApp, type CodemodFile, type CodemodResult } from "./codemod.ts";
@@ -258,12 +259,17 @@ function readIfExists(target: string, path: string, tool: string): string | null
   }
 }
 
-/** The report's ratings by tool when it was made at `commit`, the app's current commit; otherwise why it is not used. */
-export function ratingsAtCommit(report: Report, commit: string | null): { ratings: Map<string, ToolRating> } | { unusable: string } {
+/**
+ * The report's ratings by tool when they describe the code the app has now: the report was made on a clean tree at
+ * the commit the app is at, and the app has no uncommitted changes (`app` is `readGit` of the app); otherwise why not.
+ */
+export function usableRatings(report: Report, app: GitFacts): { ratings: Map<string, ToolRating> } | { unusable: string } {
   const made = report.target.commit;
   if (made === null) return { unusable: "it records no commit" };
-  if (commit === null) return { unusable: "the app has no git commit to compare it with" };
-  if (made !== commit) return { unusable: `it was made at commit ${made} and the app is at ${commit}` };
+  if (app.commit === null) return { unusable: "the app has no git commit to compare it with" };
+  if (made !== app.commit) return { unusable: `it was made at commit ${made} and the app is at ${app.commit}` };
+  if (report.target.dirty) return { unusable: "it was made on uncommitted changes" };
+  if (app.dirty) return { unusable: "the app has uncommitted changes now" };
   return { ratings: new Map(report.tools.map((rating) => [rating.tool, rating])) };
 }
 
