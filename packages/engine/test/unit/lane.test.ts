@@ -255,14 +255,17 @@ test("an invalid first run followed by a duplicate is confirmed from the duplica
 test("the configured scenario input and free text reach every run", async () => {
   const fake = fakeRunner();
   const input = { orderId: "ord_7", amount: 12, text: "hello" };
-  await lane(fake, { config: { scenarios: { naive: { input, freeText: ["text"] } } } });
+  // A free-text list that differs from the one derived from the schema (["text"]), so ignoring the config fails.
+  const result = await lane(fake, { config: { scenarios: { naive: { input, freeText: ["orderId"] } } } });
   assert.equal(fake.seen.length, 6);
   for (const o of fake.seen) {
     assert.deepEqual(o.input, input);
-    assert.deepEqual(o.freeTextFields, ["text"]);
+    assert.deepEqual(o.freeTextFields, ["orderId"]);
     assert.equal(o.lab, LAB);
     assert.equal(o.tool, NAIVE);
   }
+  // The configured free text also decides which fields count as the identity of a call.
+  assert.deepEqual(result.rating.identity, ["amount", "text"]);
 });
 
 test("without a scenario the input comes from the schema and free text from the field names", async () => {
