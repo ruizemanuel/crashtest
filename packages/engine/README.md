@@ -49,8 +49,8 @@ npx crashtest run --min-stars 4
 | `crashtest plan` | Discovers the tools and prints the plan. Never starts `eve dev`. |
 | `crashtest lane --tool <name>` | Crash-tests one tool and prints its rating. Writes no report files. |
 | `crashtest run` | Crash-tests every tool and writes the report and the badge. |
+| `crashtest fix --tool <name>` | Proposes a patch for a tool that runs twice and re-runs its lane on a patched lab copy. |
 | `crashtest badge` | Renders the badge again from a `report.json`. |
-| `crashtest fix` | Not available in this version yet. |
 
 `--app <dir>` (every command except `badge`) is the eve app to test; it defaults to the current directory.
 `--config <file>` reads the configuration from that file instead of `<app>/crashtest.config.json`; a relative path
@@ -61,9 +61,9 @@ stdout carries only results (the `--json` output or the final summary); progress
 
 | Exit code | Meaning |
 | --- | --- |
-| 0 | Done (for `run` with `--min-stars`: the agent met the bar). |
+| 0 | Done (for `run` with `--min-stars`: the agent met the bar; for `fix`: also when no candidate improved a tool). |
 | 1 | An error (the message starts with `crashtest:`), or the agent rating is below `--min-stars`. |
-| 2 | A usage error: unknown option, missing value, missing `--tool`, `--min-stars` outside 1 to 5. Nothing ran. |
+| 2 | A usage error: unknown option, missing value, missing `--tool` (for `fix`: neither or both of `--tool` and `--all`), `--min-stars` outside 1 to 5. Nothing ran. |
 | 130 | Interrupted with Ctrl-C (SIGINT). Every `eve dev` that crashtest started is killed first. |
 
 ### `crashtest plan`
@@ -129,8 +129,77 @@ Renders the badge again from a report. `--report` defaults to `.crashtest/report
 
 ### `crashtest fix`
 
-Not available in this version yet. It will propose a fix for a tool that runs twice and re-run the tool's lane
-on the patched lab.
+```
+crashtest fix (--tool <name> | --all) [--identity <a,b>] [--report <file>] [--apply] [--app <dir>] [--config <file>]
+```
+
+Proposes a patch for a tool that a crash makes run twice, and judges it the way the tool was judged: by running
+its lane again, this time on a patched lab copy of the app. The app's files change only with `--apply`.
+
+1. **Before.** The tool's rating comes from a fresh lane, or from `--report <file>` when that report was made at
+   the commit the app is at now. A report made at another commit (or without one) is ignored, with one line on
+   stderr, and the tools are rated with a fresh lane. A tool rated ★★★★★ or not evaluated gets no candidates.
+2. **Candidates.** Each strategy is a codemod applied to its own lab copy, `.crashtest/lab-fix-<strategy>`, which
+   is then overlaid and discovered like any lab; the tool's lane runs on it, and the lab is removed afterwards. Both
+   codemods add the helper `agent/lib/crashtest-idempotency.ts` (unless the app already has that file) and build
+   an op-key from the session id, the turn id, the tool name and the identity fields, never from `ctx.callId` or
+   free text. The identity fields are `--identity a,b`, else `identity.<tool>` from the configuration, else the
+   defaults described under [Configuration](#configuration).
+   - `upstream-key` sends the op-key as the `Idempotency-Key` header of the tool's request to a host that honors
+     the header (Stripe and Resend in the fake provider's catalog). It applies only when `execute` makes exactly
+     one such `fetch` call, outside any loop or callback.
+   - `ledger-guard` wraps the body of `execute` in `once(opKey(ctx, { ... }), defaultStore(), async () => { ... })`.
+     A replay after the effect finished gets the stored result; a replay after a crash during the effect gets an
+     `OUTCOME_UNKNOWN` error that tells the model to check before retrying, instead of a second effect.
+
+   A codemod that does not apply to the tool's code says why in `<tool>.json`, and its candidate runs no lane.
+3. **Choice.** A candidate improves the tool when its rating has more stars than before and no crash cell got a
+   worse verdict, from best to worst: `clean`; `phantom-failure` and `lost-effect`; `dup`; `invalid`. Of the
+   improving candidates the one with the most stars is chosen, and on a tie the earlier strategy (`upstream-key`
+   comes first).
+
+For each tool, stdout gets one result:
+
+```
+In lab: send_message ★☆☆☆☆ → ★★★★★ with ledger-guard (14 runs, eve 1.5.0). Patch: .crashtest/fix/send_message.patch
+Trade-off: a second legitimate call with the same identity (to, orderId) in the same turn is blocked.
+In lab with the file store; set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN for a durable store in production.
+```
+
+The runs are those of the chosen candidate's lane. The two extra lines appear only for `ledger-guard`:
+
+- **Trade-off.** The op-key does not change within a turn, so a second call of the tool with the same identity
+  in the same turn gets the first call's stored result instead of running. Name identity fields that tell two
+  legitimate operations apart.
+- **Store.** `defaultStore()` keeps its records in files under `.crashtest-idempotency/` in the working directory
+  of `eve dev`, which is what the lab ran with: the lab removes `UPSTASH_REDIS_REST_TOKEN` with the other
+  credential-looking variables (unless `env` in the configuration sets it). With `UPSTASH_REDIS_REST_URL` and
+  `UPSTASH_REDIS_REST_TOKEN` set, it uses Upstash Redis over REST instead, a store that every instance and every
+  deployment of the app shares.
+
+When no candidate improves the tool, it prints `No candidate improved <tool>; nothing written.` and no patch is
+written. A tool that gets no candidates prints `No fix needed for <tool>: ★★★★★ (5/5) in lab.` or
+`No fix attempted for <tool>: not evaluated (<reason>).`
+
+- `--tool <name>` fixes one tool; `--all` fixes every tool that crashtest finds and that is rated 1 to 4 stars.
+- `--identity a,b` sets the identity fields of the op-key; it goes with `--tool`.
+- `--report <file>` takes the before ratings from a `report.json` (see above); a tool that the report does not
+  cover gets a fresh lane.
+- `--apply` writes the chosen patch into the app, right after that tool's result (so with `--all` each later tool
+  starts from the patched app) and prints `Applied:` with the files. Every file must still be what the fix was made
+  from, and a file the fix creates must not exist yet; otherwise nothing is written and the command fails.
+
+The outputs go to `.crashtest/fix/`:
+
+- `<tool>.patch` is a unified diff of the chosen candidate (`a/<path>` to `b/<path>`, a new file from `/dev/null`).
+  Apply it with `git apply .crashtest/fix/<tool>.patch`. Patches of different tools each create the helper, so
+  apply one and fix the next tool from there, or use `--apply`.
+- `<tool>.json` is the outcome: the identity fields, the before rating, every candidate (whether it applied, why
+  not, its rating, its files, its runs and the eve version of its lab) and the chosen one. It is written whenever
+  candidates ran.
+
+Every lane writes its runs to `.crashtest/runs/<tool>/`, so after `fix` that directory holds the runs of the last
+lane that ran; a run directory that lane did not make can be left over from an earlier lane.
 
 ### `--keep-lab`
 
@@ -148,6 +217,9 @@ next command replaces it.
                                   the restart), provider-state.json, script.json
   runs/_discover/                 the discovery run
   lab/                            the lab copy, while a command runs (or after --keep-lab)
+  fix/<tool>.patch                the patch that crashtest fix chose for the tool
+  fix/<tool>.json                 the outcome of crashtest fix for the tool, with every candidate
+  lab-fix-<strategy>/             the patched lab copy of a fix candidate, while the candidate is tried
 ```
 
 crashtest writes `.crashtest/.gitignore`, which ignores `lab/`, `lab-*/` and `runs/`, so the report and the badge

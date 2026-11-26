@@ -58,7 +58,7 @@ function outDirInApp(appDir: string, outDir: string): string | null {
  * Only changes inside the app count, and the output directory is left out: the engine has just written into it, and
  * that is not a change to the code that was tested.
  */
-function readGit(appDir: string, outDir: string): GitFacts {
+export function readGit(appDir: string, outDir: string): GitFacts {
   const commit = git(appDir, ["rev-parse", "--short=7", "HEAD"])?.trim();
   if (commit === undefined || commit === "") return { commit: null, dirty: false };
   const out = outDirInApp(appDir, outDir);

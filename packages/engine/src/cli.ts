@@ -3,15 +3,17 @@
 // 1 an engine or config error or an agent rating below `--min-stars`, 2 a usage error, 130 interrupted (SIGINT).
 // stdout carries only results (`--json` or the final summary); progress and errors go to stderr.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { audit, auditLane, planAudit, reportFiles, type AuditPlan } from "./audit.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, type CrashtestConfig } from "./config.ts";
 import { killAllTracked } from "./driver/process.ts";
 import { ConfigError, EngineError } from "./errors.ts";
+import { applyFix, fixSummary, fixTool, isVerdictKind, ratingsAtCommit } from "./fix/fix.ts";
 import { engineVersion } from "./paths.ts";
 import { renderBadge } from "./report/badge.ts";
+import { readGit } from "./report/build.ts";
 import { commitLabel, starString } from "./report/format.ts";
-import type { EveFacts, LaneResult, Report, Stars } from "./types.ts";
+import type { EveFacts, LaneResult, Report, Stars, ToolRating } from "./types.ts";
 
 const USAGE = `crashtest ${engineVersion} - crash-test ratings for eve agents
 
@@ -21,17 +23,18 @@ Commands:
   plan     discover the agent's tools and plan the crash cells
   run      crash-test every tool and write the report
   lane     crash-test a single tool
-  fix      propose a fix for a failing tool (not available yet)
+  fix      propose a patch for a tool that a crash makes run twice, judged by its lane
   badge    render a rating badge from a report
 
 Command options:
   plan   [--app <dir>] [--config <file>] [--json]
   lane   --tool <name> [--app <dir>] [--config <file>] [--json] [--keep-lab]
   run    [--app <dir>] [--config <file>] [--tools <a,b>] [--install] [--keep-lab] [--min-stars <1-5>]
+  fix    (--tool <name> | --all) [--identity <a,b>] [--report <file>] [--apply] [--app <dir>] [--config <file>]
   badge  [--report <file>] [--out <file>]
 
-  --app defaults to the current directory, --report to .crashtest/report.json and --out
-  to badge.svg next to the report. Results describe the lab run, not production.
+  --app defaults to the current directory. For badge, --report defaults to .crashtest/report.json
+  and --out to badge.svg next to the report. Results describe the lab run, not production.
 
 Options:
   --version  print the version
@@ -43,6 +46,7 @@ const OPTIONS = {
   plan: { values: ["app", "config"], switches: ["json"] },
   lane: { values: ["app", "config", "tool"], switches: ["json", "keep-lab"] },
   run: { values: ["app", "config", "tools", "min-stars"], switches: ["install", "keep-lab"] },
+  fix: { values: ["app", "config", "tool", "identity", "report"], switches: ["all", "apply"] },
   badge: { values: ["report", "out"], switches: [] },
 } as const satisfies Record<string, { values: readonly string[]; switches: readonly string[] }>;
 
@@ -52,6 +56,16 @@ type Command =
   | { name: "plan"; app: string; config: string | undefined; json: boolean }
   | { name: "lane"; app: string; config: string | undefined; tool: string; json: boolean; keepLab: boolean }
   | { name: "run"; app: string; config: string | undefined; tools: string[] | undefined; install: boolean; keepLab: boolean; minStars: Stars | undefined }
+  | {
+      name: "fix";
+      app: string;
+      config: string | undefined;
+      /** One tool, or undefined for every tool (`--all`). */
+      tool: string | undefined;
+      identity: string[] | undefined;
+      report: string | undefined;
+      apply: boolean;
+    }
   | { name: "badge"; report: string; out: string };
 
 /** A problem with the command line itself: exit 2. */
@@ -105,13 +119,14 @@ function minStarsOf(value: string | undefined): Stars | undefined {
   return Number(value) as Stars;
 }
 
-function toolListOf(value: string | undefined): string[] | undefined {
+/** A comma-separated list of names; one without any name in it is a usage error that says `problem`. */
+function listOf(value: string | undefined, problem: string): string[] | undefined {
   if (value === undefined) return undefined;
   const names = value
     .split(",")
     .map((name) => name.trim())
     .filter((name) => name !== "");
-  if (names.length === 0) throw new UsageError("--tools needs at least one tool name");
+  if (names.length === 0) throw new UsageError(problem);
   return names;
 }
 
@@ -133,11 +148,20 @@ function parseCommand(name: CommandName, args: string[]): Command {
         name,
         app,
         config: value("config"),
-        tools: toolListOf(value("tools")),
+        tools: listOf(value("tools"), "--tools needs at least one tool name"),
         install: on("install"),
         keepLab: on("keep-lab"),
         minStars: minStarsOf(value("min-stars")),
       };
+    case "fix": {
+      const tool = value("tool");
+      if (tool === undefined && !on("all")) throw new UsageError("fix needs --tool <name> or --all");
+      if (tool !== undefined && on("all")) throw new UsageError("fix takes --tool <name> or --all, not both");
+      const identity = listOf(value("identity"), "--identity needs at least one field name");
+      if (identity !== undefined && tool === undefined) throw new UsageError("--identity names the fields of one tool: use it with --tool");
+      const report = value("report");
+      return { name, app, config: value("config"), tool, identity, report: report === undefined ? undefined : resolve(report), apply: on("apply") };
+    }
     case "badge": {
       const report = resolve(value("report") ?? reportFiles(".crashtest").json);
       return { name, report, out: resolve(value("out") ?? reportFiles(dirname(report)).badge) };
@@ -208,6 +232,19 @@ function isReport(value: unknown): value is Report {
   );
 }
 
+/** Enough of a tool rating for `fix`: the fields it compares and prints. */
+function isToolRating(value: unknown): value is ToolRating {
+  if (!isObject(value) || typeof value.tool !== "string") return false;
+  const { stars, identity, cells } = value;
+  return (
+    (stars === null || (typeof stars === "number" && Number.isInteger(stars) && stars >= 1 && stars <= 5)) &&
+    Array.isArray(identity) &&
+    identity.every((field) => typeof field === "string") &&
+    Array.isArray(cells) &&
+    cells.every((cell) => isObject(cell) && typeof cell.cellId === "string" && isVerdictKind(cell.kind))
+  );
+}
+
 function readReport(path: string): Report {
   let text: string;
   try {
@@ -224,6 +261,30 @@ function readReport(path: string): Report {
   }
   if (!isReport(parsed)) throw new EngineError(`${path} is not a crashtest report (schemaVersion 1)`);
   return parsed;
+}
+
+/** The ratings `fix` starts from: those of the report, when it was made at the commit the app is at. */
+function reportRatings(path: string, app: string): Map<string, ToolRating> | undefined {
+  const report = readReport(path);
+  const tools: unknown = report.tools;
+  if (!Array.isArray(tools)) throw new EngineError(`${path} has no tool ratings`);
+  tools.forEach((tool: unknown, index) => {
+    if (!isToolRating(tool)) {
+      const name = isObject(tool) && typeof tool.tool === "string" ? tool.tool : `#${index}`;
+      throw new EngineError(`${path} has a tool rating crashtest cannot read: ${name}`);
+    }
+  });
+  const found = ratingsAtCommit({ ...report, tools: tools as ToolRating[] }, readGit(app, join(app, ".crashtest")).commit);
+  if ("ratings" in found) return found.ratings;
+  progress(`[crashtest] the report ${path} is ignored: ${found.unusable}`);
+  return undefined;
+}
+
+/** `fix --all`: every tool that discovery finds. */
+async function everyTool(app: string, config: CrashtestConfig): Promise<string[]> {
+  const plan = await planAudit({ appDir: app, config, onProgress: progress });
+  for (const skip of plan.skipped) progress(`[crashtest] ${skip.name} skipped: ${skip.reason}`);
+  return plan.tools.map((tool) => tool.name);
 }
 
 async function execute(c: Command): Promise<number> {
@@ -247,6 +308,19 @@ async function execute(c: Command): Promise<number> {
       if (miss === null) return 0;
       process.stderr.write(`crashtest: ${miss}\n`);
       return 1;
+    }
+    case "fix": {
+      const config = loadConfig(c.app, c.config);
+      const ratings = c.report === undefined ? undefined : reportRatings(c.report, c.app);
+      for (const tool of c.tool !== undefined ? [c.tool] : await everyTool(c.app, config)) {
+        const outcome = await fixTool({ appDir: c.app, tool, config, identity: c.identity, before: ratings?.get(tool), onProgress: progress });
+        process.stdout.write(fixSummary(outcome));
+        if (c.apply && outcome.chosen !== null) {
+          applyFix(c.app, outcome);
+          process.stdout.write(`Applied: ${(outcome.chosen.files ?? []).map((file) => file.path).join(", ")}\n`);
+        }
+      }
+      return 0;
     }
     case "badge": {
       const report = readReport(c.report);

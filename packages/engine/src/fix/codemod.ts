@@ -161,7 +161,7 @@ function contains(root: string, path: string): boolean {
 }
 
 /** Whether `path` stays inside `root` also once the symbolic links in the part of it that exists are followed. */
-function insideApp(root: string, path: string): boolean {
+export function insideApp(root: string, path: string): boolean {
   if (!contains(root, path)) return false;
   let existing = path;
   while (!existsSync(existing)) existing = dirname(existing);

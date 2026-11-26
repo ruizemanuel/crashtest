@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, test, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { main } from "../../src/cli.ts";
 import { captureStderr, captureStdout, type Capture } from "./capture.ts";
 
@@ -141,4 +143,82 @@ test("badge exits 1 when the report is missing or is not a report", async (t) =>
     assert.match(err.text(), problem);
     active.pop()!.restore();
   }
+});
+
+test("fix needs exactly one of --tool and --all, and --identity only with --tool", async (t) => {
+  const app = missingApp(t);
+  const cases: [string[], RegExp][] = [
+    [["fix", "--app", app], /fix needs --tool <name> or --all/],
+    [["fix", "--app", app, "--tool", "naive", "--all"], /fix takes --tool <name> or --all, not both/],
+    [["fix", "--app", app, "--all", "--identity", "to"], /--identity names the fields of one tool: use it with --tool/],
+    [["fix", "--app", app, "--tool", "naive", "--identity", " , "], /--identity needs at least one field name/],
+    [["fix", "--app", app, "--all=yes"], /--all takes no value/],
+    [["fix", "--app", app, "--tools", "naive"], /unknown option --tools/],
+  ];
+  for (const [argv, problem] of cases) {
+    const out = stdout();
+    const err = stderr();
+    assert.equal(await main(argv), 2, argv.join(" "));
+    assert.match(err.text(), problem, argv.join(" "));
+    assert.equal(out.text(), "", `stdout stays empty for ${argv.join(" ")}`);
+    active.pop()!.restore();
+    active.pop()!.restore();
+  }
+});
+
+/** A report of `tools` made at `commit`, written to a temporary file. */
+function reportFile(t: TestContext, commit: string, tools: unknown[]): string {
+  const file = join(tempDir(t), "report.json");
+  const report = {
+    schemaVersion: 1,
+    engine: { name: "eve-crashtest", version: "0.1.0" },
+    createdAt: "2026-12-02T10:30:00.000Z",
+    target: { name: "zoo", commit, dirty: false },
+    eve: { version: "1.5.0", capabilities: { replayNever: false } },
+    lab: { platform: "linux", node: "24.2.0", cells: 6 },
+    agent: { stars: 5, evaluated: 1, total: 1 },
+    tools,
+  };
+  writeFileSync(file, `${JSON.stringify(report, null, 2)}\n`);
+  return file;
+}
+
+const FIVE_STAR_NAIVE = {
+  tool: "naive",
+  stars: 5,
+  approval: false,
+  benignRepeats: false,
+  identity: ["to", "orderId"],
+  summary: "",
+  recommendation: "",
+  cells: [{ cellId: "post-effect-fast-stable", kind: "clean" }],
+};
+
+test("fix takes the rating from a report made at the app's commit", async (t) => {
+  const zoo = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "zoo");
+  const head = spawnSync("git", ["-C", zoo, "rev-parse", "--short=7", "HEAD"], { encoding: "utf8" });
+  if (head.status !== 0) return t.skip("the zoo is not in a git work tree");
+  const out = stdout();
+  const err = stderr();
+  assert.equal(await main(["fix", "--tool", "naive", "--app", zoo, "--report", reportFile(t, head.stdout.trim(), [FIVE_STAR_NAIVE])]), 0, err.text());
+  assert.equal(out.text(), "No fix needed for naive: ★★★★★ (5/5) in lab.\n");
+  assert.doesNotMatch(err.text(), /ignored/);
+});
+
+test("fix ignores a report made at another commit, with one line on stderr", async (t) => {
+  const app = missingApp(t);
+  const file = reportFile(t, "0000000", [FIVE_STAR_NAIVE]);
+  const err = stderr();
+  assert.equal(await main(["fix", "--tool", "naive", "--app", app, "--report", file]), 1);
+  const lines = err.text().split("\n").filter(Boolean);
+  assert.equal(lines.length, 2, err.text());
+  assert.match(lines[0]!, /^\[crashtest\] the report .*report\.json is ignored: the app has no git commit to compare it with$/);
+  assert.match(lines[1]!, /^crashtest: the app directory .*no-such-app does not exist$/, "the fresh lane is attempted instead");
+});
+
+test("fix exits 1 when the report has no usable tool ratings", async (t) => {
+  const file = reportFile(t, "0000000", [{ tool: "naive", stars: 9 }]);
+  const err = stderr();
+  assert.equal(await main(["fix", "--tool", "naive", "--app", missingApp(t), "--report", file]), 1);
+  assert.match(err.text(), /^crashtest: .*report\.json has a tool rating crashtest cannot read: naive\n$/);
 });

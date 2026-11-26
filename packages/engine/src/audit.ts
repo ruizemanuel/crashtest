@@ -87,17 +87,28 @@ export async function planAudit(o: { appDir: string; config: CrashtestConfig; on
   return withLab(appDirOf(o.appDir), o.config, false, o.onProgress, async (_lab, discovery) => planOf(discovery));
 }
 
+/** The tool `name` as discovery found it; one that discovery skipped or does not know is an error. */
+function runnableTool(discovery: Discovery, name: string): ToolInfo {
+  const [tool] = selectTools(discovery, [name]).tools;
+  if (tool === undefined) {
+    const reason = discovery.skipped.find((skip) => skip.name === name)?.reason ?? "not discovered";
+    throw new EngineError(`tool "${name}" cannot run: ${reason}`);
+  }
+  return tool;
+}
+
 /** Runs the lane of one tool. No report files are written; the evidence stays in `<outDir>/runs/<tool>/`. */
-export async function auditLane(o: AuditLaneOptions): Promise<{ lane: LaneResult; eve: EveFacts }> {
+export async function auditLane(o: AuditLaneOptions): Promise<{ lane: LaneResult; tool: ToolInfo; eve: EveFacts }> {
   return withLab(appDirOf(o.appDir), o.config, o.keepLab ?? false, o.onProgress, async (lab, discovery) => {
-    const [tool] = selectTools(discovery, [o.tool]).tools;
-    if (tool === undefined) {
-      const reason = discovery.skipped.find((skip) => skip.name === o.tool)?.reason ?? "not discovered";
-      throw new EngineError(`tool "${o.tool}" cannot run: ${reason}`);
-    }
+    const tool = runnableTool(discovery, o.tool);
     const lane = await runLane({ lab, tool, config: o.config, onProgress: o.onProgress });
-    return { lane, eve: discovery.eve };
+    return { lane, tool, eve: discovery.eve };
   });
+}
+
+/** Discovers one tool (its file and input schema) in a lab that is removed again, without starting `eve dev`. */
+export async function discoverTool(o: { appDir: string; tool: string; config: CrashtestConfig; onProgress?: (line: string) => void }): Promise<{ tool: ToolInfo; eve: EveFacts }> {
+  return withLab(appDirOf(o.appDir), o.config, false, o.onProgress, async (_lab, discovery) => ({ tool: runnableTool(discovery, o.tool), eve: discovery.eve }));
 }
 
 /** The full audit: every selected tool's lane, then `report.json`, `report.md` and `badge.svg` in the output directory. */
@@ -131,10 +142,7 @@ function appDirOf(dir: string): string {
   return app;
 }
 
-/**
- * Runs `work` on a fresh lab of the app that is overlaid and discovered, then removes the lab unless `keep`.
- * A lab that cannot be removed is reported, not thrown: the work is done, and the next run wipes the lab anyway.
- */
+/** Runs `work` on a fresh lab of the app that is overlaid and discovered, then removes the lab unless `keep`. */
 async function withLab<T>(
   appDir: string,
   config: CrashtestConfig,
@@ -147,14 +155,16 @@ async function withLab<T>(
     applyOverlay(lab.labDir);
     return await work(lab, await discover(lab, config));
   } finally {
-    if (keep) {
-      onProgress?.(`[crashtest] lab kept at ${lab.labDir}`);
-    } else {
-      try {
-        removeLab(lab);
-      } catch (err) {
-        onProgress?.(`[crashtest] could not remove the lab ${lab.labDir}: ${(err as Error).message}`);
-      }
-    }
+    if (keep) onProgress?.(`[crashtest] lab kept at ${lab.labDir}`);
+    else discardLab(lab, onProgress);
+  }
+}
+
+/** Removes a lab. One that cannot be removed is reported, not thrown: the work is done, and the next run wipes the lab anyway. */
+export function discardLab(lab: Lab, onProgress?: (line: string) => void): void {
+  try {
+    removeLab(lab);
+  } catch (err) {
+    onProgress?.(`[crashtest] could not remove the lab ${lab.labDir}: ${(err as Error).message}`);
   }
 }
