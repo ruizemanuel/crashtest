@@ -1,0 +1,10 @@
+{
+  "name": "@crashtest/fixture-zoo",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ai": "^7.0.182",
+    "eve": "1.5.0",
+    "zod": "^4.6.7"
+  }
+}
