@@ -33,7 +33,7 @@ jobs:
     name: e2e (full, ubuntu-latest)
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -47,8 +47,10 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: zoo-crashtest-runs
-          path: packages/engine/test/fixtures/zoo/.crashtest/runs/**
+          name: crashtest-runs
+          path: |
+            packages/engine/test/fixtures/zoo/.crashtest/runs/**
+            examples/acme-support/.crashtest/e2e-copy/.crashtest/runs/**
           # The runs live under a hidden directory, which upload-artifact skips by default.
           include-hidden-files: true
           if-no-files-found: warn
