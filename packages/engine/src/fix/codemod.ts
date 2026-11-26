@@ -72,6 +72,7 @@ export function applyUpstreamKey(appDir: string, tool: ToolInfo, identity: strin
     if (others.length > 0) notApplied("several fetch calls to idempotency-capable hosts share one identity");
     if (mayRepeat(source, call.call, fn)) notApplied("fetch call to an idempotency-capable host inside a loop or callback");
     const binding = bindIdentity(source, fn, identity);
+    assertReadsParameters(fn, binding);
     return [...binding.edits, keyHeader(source, call, binding.key), importEdit(source, UPSTREAM_KEY_NAMES)];
   });
 }
@@ -312,11 +313,15 @@ function unwrap(node: Node | undefined): Node | undefined {
   return node;
 }
 
-/** The name of an object literal member or binding when it is written out, `"headers"` as well as `headers`. */
+/** The name of an object literal member or binding when it is written out: `headers`, `"headers"`, `["headers"]`. */
 function staticName(node: Node | undefined): string | undefined {
   if (node === undefined) return undefined;
   if (Node.isIdentifier(node)) return node.getText();
   if (Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node)) return node.getLiteralValue();
+  if (Node.isComputedPropertyName(node)) {
+    const expression = node.getExpression();
+    return Node.isStringLiteral(expression) || Node.isNoSubstitutionTemplateLiteral(expression) ? expression.getLiteralValue() : undefined;
+  }
   if (
     Node.isPropertyAssignment(node) ||
     Node.isShorthandPropertyAssignment(node) ||
@@ -359,6 +364,8 @@ interface Binding {
   edits: Edit[];
   /** `opKey(<ctx>, { <field>: <value>, … })`, valid at the top of the body of `execute`. */
   key: string;
+  /** The parameter names the key reads. Deeper in the body, a declaration of one of them would shadow it. */
+  reads: string[];
 }
 
 /**
@@ -377,11 +384,14 @@ function bindIdentity(source: Source, fn: Execute, identity: string[]): Binding 
     notApplied("execute destructures its context");
   }
 
+  // values: field → the expression the key reads it from; reads: the parameter names those expressions start with.
   let values: Map<string, string>;
+  const reads = new Set<string>();
   if (!input) {
     const name = pick(fields.length > 0 ? "input" : "_input");
     addedParameters.push(name);
     values = new Map(fields.map((field) => [field, memberOf(name, field)]));
+    if (fields.length > 0) reads.add(name);
   } else {
     const name = input.getNameNode();
     if (input.isRestParameter() || !(Node.isIdentifier(name) || Node.isObjectBindingPattern(name))) {
@@ -389,9 +399,11 @@ function bindIdentity(source: Source, fn: Execute, identity: string[]): Binding 
     }
     if (Node.isIdentifier(name)) {
       values = new Map(fields.map((field) => [field, memberOf(name.getText(), field)]));
+      if (fields.length > 0) reads.add(name.getText());
     } else {
       const destructured = bindFromPattern(source, name, fields, pick);
       values = destructured.values;
+      for (const binding of destructured.reads) reads.add(binding);
       if (destructured.edit) edits.push(destructured.edit);
     }
   }
@@ -401,13 +413,29 @@ function bindIdentity(source: Source, fn: Execute, identity: string[]): Binding 
     ctx = pick("ctx");
     addedParameters.push(ctx);
   }
+  reads.add(ctx);
   if (addedParameters.length > 0) edits.push(appendParameters(source, fn, addedParameters));
 
   const properties = fields.map((field) => {
     const value = values.get(field)!;
     return value === field ? field : `${propertyKey(field)}: ${value}`;
   });
-  return { edits, key: `opKey(${ctx}, ${properties.length > 0 ? `{ ${properties.join(", ")} }` : "{}"})` };
+  return { edits, key: `opKey(${ctx}, ${properties.length > 0 ? `{ ${properties.join(", ")} }` : "{}"})`, reads: [...reads] };
+}
+
+/**
+ * upstream-key puts the key at the fetch call, not at the top of the body, so a name it reads must still mean the
+ * parameter there. Refuses when the body of `execute` declares one of them again anywhere (a block-local `const`,
+ * a `catch (ctx)`, a callback parameter), as the key would then read another value without anything noticing.
+ */
+function assertReadsParameters(fn: Execute, binding: Binding): void {
+  for (const id of fn.getBody()?.getDescendantsOfKind(SyntaxKind.Identifier) ?? []) {
+    const name = id.getText();
+    const parent = id.getParentOrThrow();
+    if (binding.reads.includes(name) && (parent.compilerNode as { name?: ts.Node }).name === id.compilerNode && isDeclaration(parent)) {
+      notApplied(`"${name}" is declared again inside execute, so the key at the fetch call could read another value`);
+    }
+  }
 }
 
 function bindFromPattern(
@@ -415,10 +443,11 @@ function bindFromPattern(
   pattern: ObjectBindingPattern,
   fields: string[],
   pick: (wanted: string) => string,
-): { values: Map<string, string>; edit: Edit | null } {
+): { values: Map<string, string>; reads: string[]; edit: Edit | null } {
   const elements = pattern.getElements();
   const rest = elements.find((e) => e.getDotDotDotToken() !== undefined);
   const values = new Map<string, string>();
+  const reads: string[] = [];
   const added: string[] = [];
   for (const field of fields) {
     const element = elements.find((e) => e !== rest && staticName(e.getPropertyNameNode() ?? e.getNameNode()) === field);
@@ -426,15 +455,18 @@ function bindFromPattern(
       const name = element.getNameNode();
       if (!Node.isIdentifier(name)) notApplied(`execute destructures "${field}" into a nested pattern`);
       values.set(field, name.getText());
+      reads.push(name.getText());
     } else if (rest) {
       values.set(field, memberOf(rest.getName(), field));
+      reads.push(rest.getName());
     } else {
       const name = pick(bindingNameFor(field));
       added.push(name === field ? field : `${propertyKey(field)}: ${name}`);
       values.set(field, name);
+      reads.push(name);
     }
   }
-  return { values, edit: added.length > 0 ? appendToBraces(source, pattern, elements, added) : null };
+  return { values, reads, edit: added.length > 0 ? appendToBraces(source, pattern, elements, added) : null };
 }
 
 function appendParameters(source: Source, fn: Execute, names: string[]): Edit {
@@ -576,7 +608,13 @@ function keyHeader(source: Source, { call, host }: FetchCall, key: string): Edit
   if (!headers) return appendToBraces(source, init, options, [`headers: { ${header} }`]);
   const value = Node.isPropertyAssignment(headers) ? headers.getInitializer() : undefined;
   if (!value || !Node.isObjectLiteralExpression(value)) notApplied(`a fetch call to ${host} passes headers that are not an object literal`);
+  // Every header name must be known: one brought in by a spread or a computed name could be another spelling of
+  // Idempotency-Key, and fetch would send both values joined.
   const fields = value.getProperties();
+  if (fields.some((p) => Node.isSpreadAssignment(p))) {
+    notApplied(`a fetch call to ${host} spreads its headers, so an Idempotency-Key among them is unknown`);
+  }
+  if (fields.some((p) => staticName(p) === undefined)) notApplied(`a fetch call to ${host} has a computed header name`);
   const existing = fields.filter((p) => staticName(p)?.toLowerCase() === "idempotency-key");
   if (existing.length > 1) notApplied(`a fetch call to ${host} sets Idempotency-Key more than once`);
   if (existing[0]) return { start: existing[0].getStart(), end: existing[0].getEnd(), text: header };

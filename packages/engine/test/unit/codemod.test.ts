@@ -95,6 +95,15 @@ ${execute}
 `;
 }
 
+/** `orderId` is a parameter, and a block around the fetch declares another `orderId`. */
+const SHADOWED_ORDER_ID = toolSource(`  async execute({ to, orderId }, ctx) {
+    if (to) {
+      const orderId = "other";
+      await fetch("https://api.stripe.com/v1/refunds", { method: "POST", body: orderId });
+    }
+    return { done: true };
+  },`);
+
 function tempApp(t: TestContext, files: Record<string, string>): string {
   const app = mkdtempSync(join(tmpdir(), "ct-codemod-"));
   t.after(() => rmSync(app, { recursive: true, force: true }));
@@ -308,6 +317,38 @@ test("upstream-key replaces an Idempotency-Key tied to ctx.callId with an op-key
   );
 });
 
+test("upstream-key replaces an Idempotency-Key written as a computed string name", (t) => {
+  const source = RESEND.replace(`"Idempotency-Key": ctx.callId`, `["idempotency-key"]: ctx.callId`);
+  const app = tempApp(t, { "agent/tools/email.ts": source });
+
+  const result = applyUpstreamKey(app, tool("email"), IDENTITY);
+
+  assert.equal(appliedText(app, result, "agent/tools/email.ts", source), RESEND_KEYED);
+});
+
+test("ledger-guard reads the parameters even when the body declares an identity name again", (t) => {
+  // Its key sits at the top of the body, and the original statements move into the function once runs.
+  const app = tempApp(t, { "agent/tools/refund.ts": SHADOWED_ORDER_ID });
+
+  const result = applyLedgerGuard(app, tool("refund"), IDENTITY);
+
+  assert.equal(
+    appliedText(app, result, "agent/tools/refund.ts", SHADOWED_ORDER_ID),
+    toolSource(
+      `  async execute({ to, orderId }, ctx) {
+    return once(opKey(ctx, { to, orderId }), defaultStore(), async () => {
+      if (to) {
+        const orderId = "other";
+        await fetch("https://api.stripe.com/v1/refunds", { method: "POST", body: orderId });
+      }
+      return { done: true };
+    });
+  },`,
+      `import { defaultStore, once, opKey } from "../lib/crashtest-idempotency";\n`,
+    ),
+  );
+});
+
 /** A tool whose `execute` makes `call` and a fetch to a host without idempotency keys. */
 function stripeTool(call: string): string {
   return toolSource(`  async execute({ to, orderId }, ctx) {
@@ -433,6 +474,37 @@ const NOT_APPLIED: { name: string; source: string; codemod: typeof applyLedgerGu
     source: RESEND.replace(`headers: { "content-type": "application/json", "Idempotency-Key": ctx.callId },`, "headers: new Headers(),"),
     codemod: applyUpstreamKey,
     reason: "a fetch call to api.resend.com passes headers that are not an object literal",
+  },
+  {
+    name: "headers that spread another object",
+    source: RESEND.replace(`"Idempotency-Key": ctx.callId`, "...base"),
+    codemod: applyUpstreamKey,
+    reason: "a fetch call to api.resend.com spreads its headers, so an Idempotency-Key among them is unknown",
+  },
+  {
+    name: "a header name computed from a variable",
+    source: RESEND.replace(`"Idempotency-Key": ctx.callId`, "[KEY_HEADER]: ctx.callId"),
+    codemod: applyUpstreamKey,
+    reason: "a fetch call to api.resend.com has a computed header name",
+  },
+  {
+    name: "an identity binding declared again in a block around the fetch",
+    source: SHADOWED_ORDER_ID,
+    codemod: applyUpstreamKey,
+    reason: `"orderId" is declared again inside execute, so the key at the fetch call could read another value`,
+  },
+  {
+    name: "a context shadowed by a catch clause around the fetch",
+    source: toolSource(`  async execute(input, ctx) {
+    try {
+      return { done: await Promise.resolve(input.to) };
+    } catch (ctx) {
+      await fetch("https://api.resend.com/emails", { method: "POST", body: String(ctx) });
+      return { done: false };
+    }
+  },`),
+    codemod: applyUpstreamKey,
+    reason: `"ctx" is declared again inside execute, so the key at the fetch call could read another value`,
   },
   {
     name: "two fetch calls to idempotency-capable hosts",
