@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      # No `version` input: pnpm/action-setup reads `packageManager` from the root package.json.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm --filter eve-crashtest test
+      - run: pnpm --filter eve-crashtest test:e2e:smoke
+
+  e2e-full:
+    name: e2e (full, ubuntu-latest)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter eve-crashtest test:e2e
+      - name: Upload crash-test run logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo-crashtest-runs
+          path: packages/engine/test/fixtures/zoo/.crashtest/runs/**
+          # The runs live under a hidden directory, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
