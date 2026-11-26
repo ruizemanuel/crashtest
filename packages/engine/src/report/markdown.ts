@@ -24,7 +24,24 @@ function cell(text: string): string {
   return line(text).replace(/\|/g, "\\|");
 }
 
-const waiver = (rating: ToolRating): string => (rating.waived === undefined ? "" : ` (waived: ${rating.waived})`);
+/**
+ * Text that came from a tool, a provider or the config, made harmless in a comment: `<` cannot start HTML and an
+ * `@` (followed by a zero-width space) cannot mention anyone.
+ */
+function plain(text: string): string {
+  return text.replace(/</g, "&lt;").replace(/@/g, "@\u200b");
+}
+
+/** A tool name as an inline code span that a backtick in the name cannot break; in a table, `|` is escaped too. */
+function code(name: string, inTable: boolean): string {
+  const text = inTable ? cell(name) : line(name);
+  const longestRun = Math.max(0, ...[...text.matchAll(/`+/g)].map((run) => run[0].length));
+  const fence = "`".repeat(longestRun + 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
+const waiver = (rating: ToolRating): string => (rating.waived === undefined ? "" : plain(` (waived: ${rating.waived})`));
 
 function ratingHeader(r: Report): string {
   const { stars, evaluated, total } = r.agent;
@@ -35,21 +52,22 @@ function ratingHeader(r: Report): string {
 
 function holdsUp(tools: Rated[]): string[] {
   if (tools.length === 0) return [];
-  const items = tools.map((tool) => `- \`${tool.tool}\` ${starString(tool.stars)}${line(waiver(tool))} — ${line(tool.summary)}`);
+  const items = tools.map((tool) => `- ${code(tool.tool, false)} ${starString(tool.stars)}${line(waiver(tool))} — ${line(plain(tool.summary))}`);
   return [`### What already holds up\n\n${items.join("\n")}`];
 }
 
 function findings(tools: Rated[]): string[] {
   if (tools.length === 0) return [];
   const rows = tools.map(
-    (tool) => `| \`${tool.tool}\` | ${starString(tool.stars)}${cell(waiver(tool))} | ${cell(tool.summary)} | ${cell(tool.recommendation)} |`,
+    (tool) =>
+      `| ${code(tool.tool, true)} | ${starString(tool.stars)}${cell(waiver(tool))} | ${cell(plain(tool.summary))} | ${cell(plain(tool.recommendation))} |`,
   );
   return [`### Findings\n\n| Tool | Rating | What happened | Recommendation |\n| --- | --- | --- | --- |\n${rows.join("\n")}`];
 }
 
 function notEvaluated(tools: ToolRating[]): string[] {
   if (tools.length === 0) return [];
-  const items = tools.map((tool) => `- \`${tool.tool}\`${line(waiver(tool))} — ${line(tool.summary)}`);
+  const items = tools.map((tool) => `- ${code(tool.tool, false)}${line(waiver(tool))} — ${line(plain(tool.summary))}`);
   return [`### Not evaluated\n\n${items.join("\n")}`];
 }
 
@@ -64,7 +82,7 @@ function evidence(tools: ToolRating[]): string[] {
     .filter((tool) => tool.cells.length > 0)
     .map((tool) => {
       const rows = tool.cells.map((verdict) => evidenceRow(verdict, tool.approval));
-      return `**\`${tool.tool}\`**\n\n| Cell | Verdict | Effects | Recovery | Runs |\n| --- | --- | --- | --- | --- |\n${rows.join("\n")}`;
+      return `**${code(tool.tool, false)}**\n\n| Cell | Verdict | Effects | Recovery | Runs |\n| --- | --- | --- | --- | --- |\n${rows.join("\n")}`;
     });
   return tables.length === 0 ? [] : [`<details><summary>Evidence</summary>\n\n${tables.join("\n\n")}\n\n</details>`];
 }

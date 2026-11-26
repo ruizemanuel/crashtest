@@ -26,6 +26,15 @@ const UNCERTAIN_RECOMMENDATION =
 
 const LOOKUP_HINT = " The provider supports a lookup, so the tool can also check whether the effect already happened before acting.";
 
+/** How much of a tool's error text the summary quotes; the rest would only make the report unreadable. */
+const ERROR_QUOTE_CHARS = 200;
+
+/** The first `ERROR_QUOTE_CHARS` characters of an error, with `…` appended when the text was longer. */
+function quoteError(error: string): string {
+  const chars = [...error];
+  return chars.length <= ERROR_QUOTE_CHARS ? error : `${chars.slice(0, ERROR_QUOTE_CHARS).join("")}…`;
+}
+
 function excess(evidence: EffectEvidence | undefined): number {
   return evidence === undefined ? 0 : evidence.count - evidence.expected;
 }
@@ -127,7 +136,7 @@ export function rateTool(o: RateInput): ToolRating {
   if (misleading.length > 0) {
     const phantom = misleading.find((cell) => cell.kind === "phantom-failure");
     const summary = phantom
-      ? `The effect happened once, but after recovery the model got an error: ${phantom.error ?? "unknown error"}`
+      ? `The effect happened once, but after recovery the model got an error: ${phantom.error === undefined ? "unknown error" : quoteError(phantom.error)}`
       : "The model got a success, but no effect reached the provider.";
     return { ...base, stars: 4, summary, recommendation: UNCERTAIN_RECOMMENDATION };
   }

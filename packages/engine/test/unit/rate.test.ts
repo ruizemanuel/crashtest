@@ -58,6 +58,19 @@ test("a phantom failure is 4 stars and quotes the error the model got", () => {
   assert.equal(rating.recommendation, UNKNOWN_HINT);
 });
 
+test("a long error is quoted up to 200 characters and then cut with an ellipsis", () => {
+  const summaryFor = (error: string) => {
+    const phantom = verdict({ cellId: "post-effect-fast-fresh", kind: "phantom-failure", outcome: "error", error });
+    return rate([verdict(), phantom]).summary;
+  };
+  const prefix = "The effect happened once, but after recovery the model got an error: ";
+  assert.equal(summaryFor("x".repeat(200)), `${prefix}${"x".repeat(200)}`, "exactly 200 characters is quoted whole");
+  assert.equal(summaryFor("x".repeat(201)), `${prefix}${"x".repeat(200)}…`);
+  assert.equal(summaryFor("y".repeat(5000)), `${prefix}${"y".repeat(200)}…`);
+  const emoji = summaryFor("😀".repeat(250)).slice(prefix.length);
+  assert.equal(emoji, `${"😀".repeat(200)}…`, "the cut never splits a character");
+});
+
 test("a lost effect reported as success is 4 stars", () => {
   const lost = verdict({ cellId: "post-effect-slow", kind: "lost-effect", stateChanges: 0 });
   const rating = rate([verdict(), lost]);

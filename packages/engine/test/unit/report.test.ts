@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SKIP_EXCLUDED, SKIP_NOT_LISTED } from "../../src/discover.ts";
 import { engineVersion } from "../../src/paths.ts";
 import { rateTool } from "../../src/rate.ts";
 import { buildReport, type GitFacts } from "../../src/report/build.ts";
@@ -42,8 +43,8 @@ function everyLevel(): LaneResult[] {
 }
 
 const MISSING = [
-  { name: "ghost", reason: "not listed by eve info" },
-  { name: "off", reason: "excluded by config" },
+  { name: "ghost", reason: SKIP_NOT_LISTED },
+  { name: "off", reason: SKIP_EXCLUDED },
 ];
 
 function report(lanes: LaneResult[] = everyLevel(), skipped = MISSING, git = GIT): Report {
@@ -103,7 +104,7 @@ test("tools eve did not list become not-evaluated ratings; tools excluded by con
   const ghost = r.tools.find((t) => t.tool === "ghost");
   assert.ok(ghost);
   assert.equal(ghost.stars, null);
-  assert.deepEqual(ghost.na, { reason: "not-discovered", detail: "not listed by eve info" });
+  assert.deepEqual(ghost.na, { reason: "not-discovered", detail: SKIP_NOT_LISTED });
   assert.equal(ghost.summary, "eve did not list this tool.");
   assert.deepEqual(ghost.cells, []);
   assert.equal(r.tools.some((t) => t.tool === "off"), false);
@@ -119,9 +120,77 @@ test("the agent rating is the lowest rated tool; waived tools do not count", () 
   assert.equal(report([], []).agent.stars, null);
 });
 
+/** Runs git in `cwd` as a throwaway identity, so a test can commit without touching any configured one. */
+function git(cwd: string, ...args: string[]) {
+  return spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
+}
+
+/** A repository with one commit holding `apps/shop` (the app) and `apps/other` (a sibling), both with a tracked file. */
+function monorepo(dir: string): { repo: string; app: string; sibling: string } {
+  const repo = join(dir, "mono");
+  const app = join(repo, "apps", "shop");
+  const sibling = join(repo, "apps", "other");
+  mkdirSync(app, { recursive: true });
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(join(app, "package.json"), '{ "name": "shop" }\n');
+  writeFileSync(join(sibling, "notes.txt"), "one\n");
+  assert.equal(git(repo, "init", "-q").status, 0);
+  assert.equal(git(repo, "add", ".").status, 0);
+  assert.equal(git(repo, "commit", "-q", "-m", "first").status, 0);
+  return { repo, app, sibling };
+}
+
+const isDirty = (appDir: string, outDir?: string): boolean =>
+  buildReport({ appDir, eve: EVE, lanes: [], skipped: [], now: NOW, ...(outDir === undefined ? {} : { outDir }) }).target.dirty;
+
+test("the dirty flag ignores the engine's own output and anything outside the app", (t) => {
+  if (git(tmpdir(), "--version").status !== 0) return t.skip("git is not installed");
+  const dir = mkdtempSync(join(tmpdir(), "ct-dirty-"));
+  try {
+    const { app, sibling } = monorepo(dir);
+    assert.equal(isDirty(app), false, "a clean checkout is clean");
+
+    // What a run leaves behind: the output directory's own .gitignore (which does not ignore itself) and the reports.
+    mkdirSync(join(app, ".crashtest", "fix"), { recursive: true });
+    writeFileSync(join(app, ".crashtest", ".gitignore"), "lab/\nlab-*/\nruns/\n");
+    writeFileSync(join(app, ".crashtest", "report.json"), "{}\n");
+    writeFileSync(join(app, ".crashtest", "fix", "refund.patch"), "\n");
+    assert.match(git(app, "status", "--porcelain").stdout, /\?\? .*\.crashtest\//, "git itself sees the output directory as untracked");
+    assert.equal(isDirty(app), false, "the default output directory does not count");
+
+    writeFileSync(join(sibling, "notes.txt"), "two\n");
+    assert.equal(isDirty(app), false, "a change in a sibling directory is not a change to the app");
+
+    rmSync(join(app, ".crashtest"), { recursive: true });
+    mkdirSync(join(app, "out"));
+    writeFileSync(join(app, "out", "report.json"), "{}\n");
+    assert.equal(isDirty(app), true, "an untracked directory the engine does not own counts");
+    assert.equal(isDirty(app, join(app, "out")), false, "unless it is the configured output directory");
+    assert.equal(isDirty(app, join(dir, "elsewhere")), true, "an output directory outside the app excludes nothing");
+    rmSync(join(app, "out"), { recursive: true });
+
+    writeFileSync(join(app, "package.json"), '{ "name": "shop", "private": true }\n');
+    assert.equal(isDirty(app), true, "a modified tracked file inside the app is dirty");
+    assert.equal(isDirty(app, join(app, "out")), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a new file inside the app makes it dirty", (t) => {
+  if (git(tmpdir(), "--version").status !== 0) return t.skip("git is not installed");
+  const dir = mkdtempSync(join(tmpdir(), "ct-dirty-"));
+  try {
+    const { app } = monorepo(dir);
+    mkdirSync(join(app, "agent"));
+    writeFileSync(join(app, "agent", "new-tool.ts"), "export default {};\n");
+    assert.equal(isDirty(app), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("git facts come from the app directory, and are empty outside a repository", (t) => {
-  const git = (cwd: string, ...args: string[]) =>
-    spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
   if (git(tmpdir(), "--version").status !== 0) return t.skip("git is not installed");
 
   const dir = mkdtempSync(join(tmpdir(), "ct-git-"));
@@ -276,6 +345,55 @@ test("text that would break a table is escaped", () => {
   const md = renderMarkdown(report([{ tool: "refund", rating, runs: 5, wallMs: 1 }], []));
   const row = section(md, "Findings").split("\n").find((line) => line.startsWith("| `refund`"));
   assert.equal(row, "| `refund` | ★★★☆☆ | a \\| b second line | use `x \\| y` |");
+});
+
+test("tool names cannot break a code span, a table row or a list item", () => {
+  const md = renderMarkdown(
+    report(
+      [
+        lane("a`b|c", [dup("stable", "post-effect-fast-stable"), ...clean]),
+        lane("`edge`", clean),
+        lane("two\nlines", [], { na: { reason: "no-effect", detail: "" } }),
+      ],
+      [],
+    ),
+  );
+  assert.ok(md.includes("| ``a`b\\|c`` | ★☆☆☆☆ |"), "a backtick lengthens the fence and a pipe is escaped in a table");
+  assert.ok(md.includes("- `` `edge` `` ★★★★★ — "), "a name that starts or ends with a backtick is padded");
+  assert.ok(md.includes("- `two lines` — No external effect observed in the baseline."), "a line break becomes a space");
+  assert.ok(md.includes("**``a`b|c``**\n\n| Cell"), "the evidence heading uses the same code span, without the table escape");
+  const row = section(md, "Findings").split("\n").find((l) => l.startsWith("| ``a"));
+  assert.equal(row?.split(/(?<!\\)\|/).length, 6, "the row still has four cells");
+});
+
+test("text from tools and config cannot ping anyone or inject HTML into a posted comment", () => {
+  const hostile = "@octocat <img src=x onerror=alert(1)>";
+  const phantom = verdict({ cellId: "post-effect-fast-fresh", kind: "phantom-failure", outcome: "error", error: hostile });
+  const rated = lane("refund", [verdict(), phantom], { waiver: "ask @octocat" });
+  const hand: ToolRating = { ...lane("notify", clean).rating, stars: 3, summary: hostile, recommendation: `${hostile} (cc @hubot)` };
+  const failed = lane("ping", [], { na: { reason: "baseline-failed", detail: hostile } });
+  const md = renderMarkdown(report([rated, { tool: "notify", rating: hand, runs: 5, wallMs: 1 }, failed], []));
+
+  assert.ok(!md.includes("@octocat") && !md.includes("@hubot"), "every @ is followed by a zero-width space");
+  assert.ok(!md.includes("<img"), "no raw HTML from outside text");
+  assert.ok(md.includes("the model got an error: @\u200boctocat &lt;img src=x onerror=alert(1)> |"), "the error is quoted, neutralized, in the table");
+  assert.ok(md.includes("| `notify` | ★★★☆☆ | @\u200boctocat &lt;img src=x onerror=alert(1)> | @\u200boctocat &lt;img src=x onerror=alert(1)> (cc @\u200bhubot) |"));
+  assert.ok(md.includes("(cc @\u200bhubot)"));
+  assert.ok(md.includes("(waived: ask @\u200boctocat)"));
+  assert.ok(md.includes("- `ping` — The baseline run failed: @\u200boctocat &lt;img src=x onerror=alert(1)>"), "also in the not-evaluated list");
+  assert.ok(md.includes("<details><summary>Evidence</summary>"), "the report's own markup is untouched");
+});
+
+test("a report with no tools at all renders", () => {
+  const r = report([], []);
+  assert.deepEqual(r.tools, []);
+  assert.deepEqual(r.agent, { stars: null, evaluated: 0, total: 0 });
+  const md = renderMarkdown(r);
+  assert.equal(md.split("\n")[2], "In lab: 0 cells · eve 1.5.0 · commit abc1234 · 2026-12-02");
+  assert.equal(md.split("\n")[4], "**Agent rating: not evaluated**");
+  assert.ok(!md.includes("###") && !md.includes("<details>"));
+  assert.ok(md.includes("Protection mechanisms in eve 1.5.0:") && md.includes("Limits: crashtest sees"));
+  assert.ok(renderBadge(r).includes("not evaluated"));
 });
 
 test("the Markdown never calls anything verified or safe, at any star level", () => {

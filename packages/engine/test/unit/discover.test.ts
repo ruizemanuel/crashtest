@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { discover } from "../../src/discover.ts";
+import { discover, SKIP_EXCLUDED, SKIP_NOT_LISTED } from "../../src/discover.ts";
 import { EngineError } from "../../src/errors.ts";
 import type { Lab } from "../../src/lab.ts";
 
@@ -58,7 +58,7 @@ test("tools are the authored files that eve lists, sorted, with their schemas; t
   assert.deepEqual(discovery.tools.map((tool) => tool.name), ["naive", "readonly"]);
   assert.deepEqual(discovery.tools.map((tool) => tool.file), ["agent/tools/naive.mts", "agent/tools/readonly.ts"]);
   assert.deepEqual(discovery.tools[0]!.inputSchema, { type: "object", properties: { to: { type: "string" } } });
-  assert.deepEqual(discovery.skipped, [{ name: "ghost", reason: "not listed by eve info" }]);
+  assert.deepEqual(discovery.skipped, [{ name: "ghost", reason: SKIP_NOT_LISTED }]);
   assert.deepEqual(discovery.eve, { version: "1.5.0", capabilities: { replayNever: false } });
 });
 
@@ -74,8 +74,8 @@ test("config.tools.exclude removes tools from the run and reports them", async (
 
   assert.deepEqual(discovery.tools.map((tool) => tool.name), ["naive"]);
   assert.deepEqual(discovery.skipped, [
-    { name: "ghost", reason: "excluded by config" },
-    { name: "readonly", reason: "excluded by config" },
+    { name: "ghost", reason: SKIP_EXCLUDED },
+    { name: "readonly", reason: SKIP_EXCLUDED },
   ]);
 });
 

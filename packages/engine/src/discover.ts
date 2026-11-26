@@ -9,6 +9,10 @@ import { EngineError } from "./errors.ts";
 import { preloadedLabEnv, type Lab } from "./lab.ts";
 import type { EveFacts, JsonSchema, ToolInfo } from "./types.ts";
 
+/** Why discovery left a tool out of the run: eve did not list it, or the config excludes it. The report reads these. */
+export const SKIP_NOT_LISTED = "not listed by eve info";
+export const SKIP_EXCLUDED = "excluded by config";
+
 export interface Discovery {
   tools: ToolInfo[];
   skipped: { name: string; reason: string }[];
@@ -45,10 +49,10 @@ export async function discover(lab: Lab, config: CrashtestConfig): Promise<Disco
   const skipped = new Map<string, string>();
   for (const { name, file } of authoredTools(lab.labDir)) {
     if (excluded.has(name)) continue; // reported below with the rest of the exclude list
-    if (!listed.has(name)) skipped.set(name, "not listed by eve info");
+    if (!listed.has(name)) skipped.set(name, SKIP_NOT_LISTED);
     else tools.push({ name, file, inputSchema: asSchema(schemas[name]) });
   }
-  for (const name of excluded) skipped.set(name, "excluded by config");
+  for (const name of excluded) skipped.set(name, SKIP_EXCLUDED);
 
   return {
     tools: tools.sort(byName),
