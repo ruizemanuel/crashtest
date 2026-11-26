@@ -76,11 +76,15 @@ function asSchema(value: unknown): JsonSchema | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonSchema) : null;
 }
 
-/** Runs `eve info --json` in the lab and checks that the overlay took effect and that eve found no errors. */
+/**
+ * Runs `eve info --json` in the lab and checks that the overlay took effect and that eve found no errors.
+ * CLI telemetry is off: discovery runs without the preload, so eve would send it for real, from a detached
+ * flush process that outlives `eve info` with the lab as its working directory (on Windows the lab then cannot be wiped).
+ */
 function readEveInfo(lab: Lab): EveInfo {
   const result = spawnSync(process.execPath, [lab.eveBin, "info", "--json"], {
     cwd: lab.labDir,
-    env: labEnv(process.env, {}),
+    env: labEnv(process.env, { EVE_TELEMETRY_DISABLED: "1" }),
     encoding: "utf8",
     timeout: INFO_TIMEOUT_MS,
     maxBuffer: 64 * 1024 * 1024,

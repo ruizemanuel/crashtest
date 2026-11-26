@@ -122,3 +122,17 @@ test("replayNever is true only when an eve type definition declares it", async (
   assert.equal((await discover(unrelated, {})).eve.capabilities.replayNever, false);
   assert.equal((await discover(noDist, {})).eve.capabilities.replayNever, false);
 });
+
+test("eve info runs with CLI telemetry disabled", async (t) => {
+  // eve info would otherwise send telemetry (discovery runs without the preload) from a detached
+  // process that keeps the lab as its working directory.
+  const lab = setup(t, JSON.stringify(info()), ["naive.ts"]);
+  writeFileSync(
+    lab.eveBin,
+    `const info = JSON.parse(require("node:fs").readFileSync("eve-info.stub", "utf8"));
+if (process.env.EVE_TELEMETRY_DISABLED !== "1") info.status = "telemetry-enabled";
+process.stdout.write(JSON.stringify(info));
+`,
+  );
+  assert.deepEqual((await discover(lab, {})).tools.map((tool) => tool.name), ["naive"]);
+});

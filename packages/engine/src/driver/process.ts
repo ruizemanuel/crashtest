@@ -46,16 +46,23 @@ export function spawnTracked(cmd: string, args: string[], opts: SpawnOptions): C
   return child;
 }
 
-/** SIGKILL the child and everything it spawned. No-op for a child that is gone or never started. */
+/**
+ * SIGKILL the child and everything it spawned. No-op for a child that never started.
+ * On POSIX the whole process group is signalled even when the leader already exited: in a crash
+ * cell the leader can die while a worker it started survives in its group. On Windows `taskkill /T`
+ * needs a live leader to find the tree, so an exited child is skipped (callers back it up with `killPort`).
+ */
 export function killTree(child: ChildProcess): void {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  if (IS_WIN) spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" });
-  else {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
+  if (child.pid === undefined) return;
+  if (IS_WIN) {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    // ESRCH: the group is already empty
   }
 }
 
