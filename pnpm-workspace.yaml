@@ -1,0 +1,6 @@
+packages:
+  - packages/*
+  - packages/engine/test/fixtures/*
+  - examples/*
+minimumReleaseAgeExclude:
+  - '@mswjs/interceptors@0.45.13'
