@@ -26,16 +26,13 @@ export function createLab(appDir: string, opts: { outDir?: string; labDir?: stri
   const app = resolve(appDir);
   const outDir = resolve(opts.outDir ?? join(app, ".crashtest"));
   const labDir = resolve(opts.labDir ?? join(outDir, "lab"));
-  const labRel = relative(app, labDir);
-  if (labRel === "" || labRel === ".." || labRel.startsWith(`..${sep}`) || isAbsolute(labRel)) {
-    throw new EngineError(`the lab ${labDir} must be inside the app ${app}, so Node can find the app's node_modules`);
-  }
+  assertLabLayout(app, outDir, labDir);
 
   // The lab sits inside the app, so eve resolves upward; failing here touches nothing on disk.
   const eve = resolveEveBin(labDir);
 
-  // Never copy the audit output (or a lab placed elsewhere in the app) into the lab itself.
-  const outputDirs = [outDir, labDir].map((dir) => toPosix(relative(app, dir))).filter((rel) => rel !== "" && !rel.startsWith("../"));
+  // The output directory (and the lab in it) is never copied into the lab itself.
+  const outputDirs = [toPosix(relative(app, outDir))];
   const excludedDir = (rel: string): boolean => rel.split("/").some((s) => EXCLUDED_SEGMENTS.has(s)) || underAny(rel, outputDirs);
   const excludedFile = (rel: string): boolean => excludedDir(rel) || rel.slice(rel.lastIndexOf("/") + 1).startsWith(SECRET_FILE_PREFIX);
 
@@ -54,9 +51,29 @@ export function createLab(appDir: string, opts: { outDir?: string; labDir?: stri
   return { appDir: app, outDir, labDir, eveBin: eve.bin, eveVersion: eve.version };
 }
 
-/** Delete the lab copy. The output directory (runs, reports) stays. */
+/** Delete the lab copy. The output directory (runs, reports) stays. Refuses a lab that is not where `createLab` puts it. */
 export function removeLab(lab: Lab): void {
+  assertLabLayout(resolve(lab.appDir), resolve(lab.outDir), resolve(lab.labDir));
   rmSync(lab.labDir, { recursive: true, force: true, maxRetries: 3 });
+}
+
+/**
+ * The directory layout that makes wiping the lab safe: the output directory is strictly inside the
+ * app (Node then finds the app's node_modules upward) and the lab is strictly inside the output
+ * directory, so a wipe can never reach the app's own files, `.git` or `node_modules`.
+ */
+function assertLabLayout(app: string, outDir: string, labDir: string): void {
+  if (!strictlyInside(app, outDir)) {
+    throw new EngineError(`the output directory ${outDir} must be inside the app ${app}, so Node can find the app's node_modules`);
+  }
+  if (!strictlyInside(outDir, labDir)) {
+    throw new EngineError(`the lab ${labDir} must be inside the output directory ${outDir}: only that directory is ever wiped`);
+  }
+}
+
+function strictlyInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE/i;

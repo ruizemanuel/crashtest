@@ -198,6 +198,60 @@ test("a lab outside the app is refused before anything is touched", () => {
   });
 });
 
+test("only a directory strictly inside the output directory is ever wiped", () => {
+  withTemp((root) => {
+    const app = join(root, "app");
+    seedApp(app);
+    put(app, "out/runs/r1/report.json");
+    const skip = new Set([".git"]);
+    const before = hashTree(app, skip);
+
+    const refused: { opts: { outDir?: string; labDir?: string }; what: string }[] = [
+      { opts: { labDir: join(app, "src") }, what: "a source directory" },
+      { opts: { labDir: join(app, "node_modules") }, what: "node_modules" },
+      { opts: { labDir: join(app, ".crashtest") }, what: "the default output directory itself" },
+      { opts: { outDir: join(app, "out"), labDir: join(app, "out") }, what: "the output directory itself" },
+      { opts: { outDir: join(app, "out"), labDir: join(app, "src") }, what: "a source directory with a custom output directory" },
+      { opts: { outDir: app }, what: "the app as the output directory" },
+    ];
+    for (const { opts, what } of refused) {
+      assert.throws(
+        () => createLab(app, opts),
+        (err: unknown) => err instanceof EngineError && /must be inside/.test(err.message),
+        what,
+      );
+    }
+    assert.deepEqual(hashTree(app, skip), before, "nothing in the app changed");
+    assert.equal(existsSync(join(app, ".crashtest", "lab")), false);
+  });
+});
+
+test("removeLab refuses a lab that is not strictly inside its output directory", () => {
+  withTemp((root) => {
+    const app = join(root, "app");
+    seedApp(app);
+    const real = createLab(app);
+    const skip = new Set([".git"]);
+    const before = hashTree(app, skip);
+
+    const forged = [
+      { ...real, labDir: join(app, "src") },
+      { ...real, labDir: real.outDir },
+      { ...real, labDir: app },
+      { ...real, outDir: app, labDir: join(app, "src") },
+      { ...real, outDir: join(root, "elsewhere"), labDir: join(root, "elsewhere", "lab") },
+    ];
+    for (const lab of forged) {
+      assert.throws(
+        () => removeLab(lab),
+        (err: unknown) => err instanceof EngineError && /must be inside/.test(err.message),
+      );
+    }
+    assert.deepEqual(hashTree(app, skip), before, "nothing in the app changed");
+    assert.equal(existsSync(join(real.labDir, "a.ts")), true);
+  });
+});
+
 test("creating a lab again wipes the previous one; removeLab deletes it", () => {
   withTemp((root) => {
     const app = join(root, "app");
