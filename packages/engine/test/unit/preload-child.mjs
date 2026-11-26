@@ -3,6 +3,7 @@
 // so that a line printed before a self-inflicted SIGKILL is never lost.
 // The file-system scenarios run with the lab as the working directory, and import node:fs the way eve's tool code
 // does (named ESM imports, which only see the preload's wrappers after syncBuiltinESMExports).
+import { spawnSync } from "node:child_process";
 import fs, { appendFile, appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, writeFile, writeFileSync, writeSync } from "node:fs";
 import fsp, { appendFile as appendFilePromise, writeFile as writeFilePromise } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -123,6 +124,30 @@ switch (scenario) {
     writeFileSync("big.txt", `${head}B`);
     break;
   }
+  case "fs-spied": {
+    // A spy above the preload's wrappers: it sees every call that reaches a wrapped (public) node:fs function.
+    const reached = [];
+    for (const [target, names] of [[fs, ["writeFileSync", "appendFileSync", "writeFile", "appendFile"]], [fs.promises, ["writeFile", "appendFile"]]]) {
+      for (const name of names) {
+        const inner = target[name];
+        target[name] = function (...args) {
+          reached.push(String(args[0]));
+          return inner.apply(this, args);
+        };
+      }
+    }
+    mkdirSync("data", { recursive: true });
+    await refund(); // the preload ledgers it and saves its state in the run directory
+    fs.appendFileSync("data/outbox.jsonl", OUTBOX_LINE); // the same for a file effect
+    await fs.promises.appendFile("data/outbox.jsonl", OUTBOX_LINE);
+    say({ event: "reached", paths: reached });
+    break;
+  }
+  case "fs-child-process":
+    mkdirSync("data", { recursive: true });
+    // A Node child inherits NODE_OPTIONS and the CT_* variables, so it loads the preload too.
+    spawnSync(process.execPath, ["-e", "require('node:fs').writeFileSync('data/from-child.txt', 'from a child')"], { stdio: "ignore" });
+    break;
   case "fs-secret":
     writeFileSync("small.json", JSON.stringify({ password: "hunter2", n: 1 }));
     writeFileSync("large.json", JSON.stringify({ apiKey: "hunter2", items: Array.from({ length: 400 }, (_, i) => `item-${i}`) }));

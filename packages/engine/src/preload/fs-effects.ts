@@ -132,10 +132,9 @@ export function installFsEffects(o: FsEffectsOptions): void {
     return { op: alwaysAppend || appends(args[2]) ? "APPEND" : "WRITE", relPath, content };
   }
 
-  const done = (seen: Observed): void => o.record(seen.op, seen.relPath, seen.content);
-
   // appendFileSync calls fs.writeFileSync and appendFile calls fs.writeFile, now both wrapped: a call that happens
-  // inside another observed call is part of it and must not be recorded again.
+  // inside another observed call is part of it and must not be recorded again. The same goes for whatever
+  // `record` writes while it runs: nothing it does is observed, so it can never trigger itself.
   let nested = 0;
   function around<T>(call: () => T): T {
     nested++;
@@ -145,6 +144,8 @@ export function installFsEffects(o: FsEffectsOptions): void {
       nested--;
     }
   }
+
+  const done = (seen: Observed): void => around(() => o.record(seen.op, seen.relPath, seen.content));
 
   const sync = (alwaysAppend: boolean) => (original: Fn): Fn =>
     function (this: unknown, ...args) {
@@ -175,7 +176,7 @@ export function installFsEffects(o: FsEffectsOptions): void {
 
   const promise = (alwaysAppend: boolean) => (original: Fn): Fn =>
     async function (this: unknown, ...args) {
-      const seen = observe(args, alwaysAppend);
+      const seen = nested === 0 ? observe(args, alwaysAppend) : null;
       const result = await Reflect.apply(original, this, args);
       if (seen !== null) done(seen);
       return result;

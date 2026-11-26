@@ -22,6 +22,11 @@ const EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", ".eve", ".crashtest",
 /** Files whose basename starts with this prefix hold secrets and are never copied. */
 const SECRET_FILE_PREFIX = ".env";
 
+/** True for a lab-relative posix path that is never copied into the lab: excluded directories and secret files. */
+export function isNeverCopied(rel: string): boolean {
+  return rel.split("/").some((s) => EXCLUDED_SEGMENTS.has(s)) || rel.slice(rel.lastIndexOf("/") + 1).startsWith(SECRET_FILE_PREFIX);
+}
+
 /** Copy the app into a fresh lab directory and return where eve lives for it. The source tree is never modified. */
 export function createLab(appDir: string, opts: { outDir?: string; labDir?: string } = {}): Lab {
   const app = resolve(appDir);
@@ -35,7 +40,7 @@ export function createLab(appDir: string, opts: { outDir?: string; labDir?: stri
   // The output directory (and the lab in it) is never copied into the lab itself.
   const outputDirs = [toPosix(relative(app, outDir))];
   const excludedDir = (rel: string): boolean => rel.split("/").some((s) => EXCLUDED_SEGMENTS.has(s)) || underAny(rel, outputDirs);
-  const excludedFile = (rel: string): boolean => excludedDir(rel) || rel.slice(rel.lastIndexOf("/") + 1).startsWith(SECRET_FILE_PREFIX);
+  const excludedFile = (rel: string): boolean => isNeverCopied(rel) || underAny(rel, outputDirs);
 
   rmSync(labDir, { recursive: true, force: true, maxRetries: 3 });
   for (const rel of listSourceFiles(app, excludedDir).filter((f) => !excludedFile(f))) {

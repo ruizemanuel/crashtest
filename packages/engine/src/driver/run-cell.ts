@@ -9,6 +9,7 @@ import type { CrashtestConfig } from "../config.ts";
 import { preloadedLabEnv, type Lab } from "../lab.ts";
 import type { Cell, CellId, LedgerEntry, RunSummary, ToolInfo } from "../types.ts";
 import { HealthMonitor } from "./health.ts";
+import { restoreLabFiles, writtenPaths } from "./lab-files.ts";
 import { freePort, killPort, listenerPids } from "./ports.ts";
 import { killTree, spawnTracked } from "./process.ts";
 import { parseStream, type ParsedStream } from "./stream.ts";
@@ -80,6 +81,8 @@ export async function runCell(o: RunCellOptions): Promise<RunSummary> {
   } finally {
     const released = await stopServer(server.child, port);
     if (!released) drive.errors.push(`port ${port} was still held after the run`);
+    // The server is gone, so nothing writes any more: the next cell starts from the prepared lab files again.
+    drive.errors.push(...restoreLabFiles(o.lab, writtenPaths(readText(join(runDir, "ledger.jsonl")) ?? "")));
   }
 
   const ledger = readLedger(join(runDir, "ledger.jsonl"), drive.errors);

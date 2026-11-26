@@ -255,13 +255,17 @@ silently weaken the test.
   app makes inside the lab with `node:fs`: `writeFileSync`, `appendFileSync`, `writeFile`, `appendFile` and the
   `fs.promises` forms of `writeFile` and `appendFile`. Files under `.eve`, `node_modules` or a `.crashtest*`
   directory at the top of the lab are not effects. It does not observe raw TCP (Postgres, Redis, SMTP), HTTP/2,
-  gRPC, effects inside eve sandboxes, writes outside the lab, writes from child processes, or file changes made
-  through other APIs: a file descriptor (`fs.write`), a stream (`createWriteStream`), an
-  `fs.promises` file handle, `rename`, `copyFile`, `rm` and so on. A tool whose only effect is one of these shows
-  as not evaluated (no external effect in the baseline).
+  gRPC, effects inside eve sandboxes, writes outside the lab, writes from child processes that are not Node (a Node
+  child process inherits the preload and is observed), or file changes made through other APIs: a file descriptor
+  (`fs.write`), a stream (`createWriteStream`), an `fs.promises` file handle, `rename`, `copyFile`, `rm` and so on.
+  A tool whose only effect is one of these shows as not evaluated (no external effect in the baseline).
 - For a file write, the 2 s hold of `post-effect-slow` stops the whole process, not just the call, so eve cannot mark
   the call as interrupted: that cell shows a replay with a new call id, like `post-effect-fast-fresh`, instead of a
   model retry.
+- Each cell starts from the prepared lab files. After a cell, every file the preload recorded as written is put
+  back: copied from the app when the app has that file, removed (with the directories that this leaves empty)
+  otherwise. Files changed in ways crashtest does not observe, and everything under `.eve`, `node_modules` and
+  `.crashtest*`, are not restored.
 - Only the six cells above run. A crash before the effect, while an approval is pending, a second crash during
   recovery, or a crash after every event are not tested.
 - Each tool is tested with one input and one call per turn; multi-step scenarios are not supported.

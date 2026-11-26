@@ -21,9 +21,16 @@ import { installFsEffects } from "./fs-effects.ts";
 import { isRecord, redactUrl } from "./normalize.ts";
 
 // Installing the file-system effects patches node:fs and refreshes the live bindings of every named import, this
-// module's too. The two write functions the preload itself uses are taken here, before any patching, so its own
-// files (ledger, state, marker) are never observed.
-const { appendFileSync, writeFileSync } = fs;
+// module's too. The write function the preload itself uses is taken here, before any patching, and every file of
+// its own (ledger, ready file, state, marker) is written with it, so none of those writes reaches a wrapped
+// function. That includes appends, which are `writeFileSync` with the append flag: the original `appendFileSync`
+// would call the patched `fs.writeFileSync`. The path filter of the wrappers is a second line, not the first.
+const { writeFileSync } = fs;
+
+/** Appends `text` to `file` without going through a wrapped function. */
+function appendText(file: string, text: string): void {
+  writeFileSync(file, text, { flag: "a" });
+}
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]);
 // A Response with one of these statuses must not carry a body.
@@ -130,7 +137,7 @@ function activate(runDir: string): void {
   const fixtures = loadFixtures(process.env.CT_FIXTURES);
 
   mkdirSync(runDir, { recursive: true });
-  appendFileSync(join(runDir, "preload.ready"), `${process.pid}\n`);
+  appendText(join(runDir, "preload.ready"), `${process.pid}\n`);
 
   // The state and the ledger are read again for every request: eve runs more than one preloaded process against
   // the same run directory, and a process that restarts after a crash must continue where the last one died.
@@ -153,7 +160,7 @@ function activate(runDir: string): void {
       body: what.body,
       status: what.status,
     };
-    appendFileSync(ledgerFile, `${JSON.stringify(entry)}\n`);
+    appendText(ledgerFile, `${JSON.stringify(entry)}\n`);
   }
 
   function record(method: string, url: string, result: FakeResult): void {

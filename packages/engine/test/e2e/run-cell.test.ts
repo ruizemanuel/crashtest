@@ -164,9 +164,12 @@ test("fs_effect: the replay after a crash appends the outbox line twice, and bot
   assert.deepEqual(fx.map((entry) => [entry.kind, entry.endpoint, entry.url]), [["fs", "APPEND data/outbox.jsonl", "data/outbox.jsonl"], ["fs", "APPEND data/outbox.jsonl", "data/outbox.jsonl"]]);
   assert.notEqual(fx[0].pid, fx[1].pid, "the two appends come from two processes");
   assert.equal(s.ledger.filter((entry) => entry.kind === "fs").length, 2, `eve writes nothing else in the lab outside .eve: ${describe(s)}`);
-  // What the ledger counted is what the tool really wrote.
-  const lines = readFileSync(join(zoo.lab.labDir, "data", "outbox.jsonl"), "utf8").split("\n").filter(Boolean);
-  assert.deepEqual(lines.map((line) => JSON.parse(line) as unknown), fx.map((entry) => entry.body));
+  const input = sampleInput(tool(zoo.discovery, "fs_effect").inputSchema);
+  assert.deepEqual(fx.map((entry) => entry.body), [input, input], describe(s));
+  // The next cell starts from the prepared lab files: what the tool wrote, and the directory it made, are gone.
+  assert.equal(existsSync(join(zoo.lab.labDir, "data", "outbox.jsonl")), false);
+  assert.equal(existsSync(join(zoo.lab.labDir, "data")), false);
+  assert.equal(s.error, undefined, describe(s));
 });
 
 test("baseline approval_naive is auto-approved", E2E, async (t) => {

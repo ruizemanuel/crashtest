@@ -368,6 +368,15 @@ test("descriptor and stream writes are not observed", async (t) => {
   assert.deepEqual(readLedger(runDir), []);
 });
 
+test("a Node child process of the app is observed too", async (t) => {
+  const { out, runDir } = await runInLab(t, "fs-child-process");
+  assert.equal(out.code, 0, out.stderr);
+  const [entry, ...rest] = readLedger(runDir);
+  assert.equal(rest.length, 0);
+  assert.deepEqual([entry.method, entry.url, entry.body], ["WRITE", "data/from-child.txt", "from a child"]);
+  assert.notEqual(entry.pid, out.pid);
+});
+
 test("without CT_LAB_DIR file writes are not observed", async (t) => {
   const lab = tempDir(t);
   const runDir = tempDir(t);
@@ -375,6 +384,19 @@ test("without CT_LAB_DIR file writes are not observed", async (t) => {
   assert.equal(out.code, 0, out.stderr);
   assert.equal(readFileSync(join(lab, "data", "outbox.jsonl"), "utf8"), OUTBOX);
   assert.deepEqual(readLedger(runDir), []);
+});
+
+test("the preload's own files never pass through a wrapped node:fs function", async (t) => {
+  // The run directory is inside the lab, where only the path filter would keep its files out of the ledger.
+  const lab = tempDir(t);
+  const runDir = join(lab, "ct-run");
+  const { out } = await runInLab(t, "fs-spied", { lab, runDir });
+  assert.equal(out.code, 0, out.stderr);
+  const paths = eventOf(out, "reached")?.paths as string[];
+  // The spy saw the tool's own calls, and nothing the preload wrote (ledger, state).
+  assert.ok(paths.some((p) => p.endsWith("outbox.jsonl")), JSON.stringify(paths));
+  assert.deepEqual(paths.filter((p) => p.startsWith(runDir)), []);
+  assert.deepEqual(readLedger(runDir).map((e) => [e.kind, e.endpoint]), [["http", "POST api.stripe.com/v1/refunds"], ["fs", "APPEND data/outbox.jsonl"], ["fs", "APPEND data/outbox.jsonl"]]);
 });
 
 test("a repeated write with the same content is benign, a different one is not", async (t) => {
