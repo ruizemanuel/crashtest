@@ -1,0 +1,19 @@
+{
+  "name": "broken-fixture",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": "true",
+  "dependencies": {
+    "ai": "^7.0.182",
+    "eve": "^1.5.0",
+    "zod": "^4.6.7"
+  }
+}
