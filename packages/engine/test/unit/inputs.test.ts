@@ -181,3 +181,23 @@ test("identityFields: a configured list wins, also without a schema", () => {
   assert.deepEqual(identityFields(null, []), []);
   assert.deepEqual(identityFields({ type: "object", properties: { a: { type: "string" } } }, []), []);
 });
+
+test("sampleInput: only id, Id and _id endings are treated as identifiers", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      paid: { type: "string" },
+      valid: { type: "string" },
+      id: { type: "string" },
+      orderId: { type: "string" },
+      order_id: { type: "string" },
+    },
+  };
+  assert.deepEqual(sampleInput(schema), {
+    paid: "crashtest paid",
+    valid: "crashtest valid",
+    id: "id_ct_1",
+    orderId: "orderId_ct_1",
+    order_id: "order_id_ct_1",
+  });
+});

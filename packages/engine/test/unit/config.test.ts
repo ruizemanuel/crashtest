@@ -123,3 +123,33 @@ test("config: a directory in place of the file is an error", () => {
     assert.throws(() => loadConfig(dir), ConfigError);
   });
 });
+
+function assertUnknownKey(config: unknown, pattern: RegExp): void {
+  withApp(JSON.stringify(config), (dir) => {
+    assert.throws(
+      () => loadConfig(dir),
+      (err: unknown) => err instanceof ConfigError && pattern.test(err.message),
+      JSON.stringify(config),
+    );
+  });
+}
+
+test("config: a misspelled key in tools names its full path", () => {
+  assertUnknownKey({ tools: { excludes: ["x"] } }, /unknown key "tools\.excludes"; allowed keys: exclude$/);
+});
+
+test("config: a misspelled key in effects names its full path", () => {
+  assertUnknownKey({ effects: { ingore: ["x"] } }, /unknown key "effects\.ingore"; allowed keys: ignore$/);
+});
+
+test("config: a misspelled key in a scenario names its full path", () => {
+  assertUnknownKey({ scenarios: { t: { freetext: ["x"] } } }, /unknown key "scenarios\.t\.freetext"; allowed keys: input, freeText$/);
+  assertUnknownKey({ scenarios: { t: { inputs: {} } } }, /unknown key "scenarios\.t\.inputs"; allowed keys: input, freeText$/);
+});
+
+test("config: a misspelled key in a fixture names its full path", () => {
+  assertUnknownKey(
+    { fixtures: [{ url: "x" }, { url: "y", statuscode: 200 }] },
+    /unknown key "fixtures\[1\]\.statuscode"; allowed keys: method, url, status, body$/,
+  );
+});

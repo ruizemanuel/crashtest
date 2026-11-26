@@ -17,6 +17,8 @@ export interface CrashtestConfig {
 }
 
 const CONFIG_FILE = "crashtest.config.json";
+const SCENARIO_KEYS = ["input", "freeText"] as const;
+const FIXTURE_KEYS = ["method", "url", "status", "body"] as const;
 const ALLOWED_KEYS = ["scenarios", "identity", "env", "fixtures", "effects", "waivers", "tools"] as const;
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -31,6 +33,16 @@ function bad(path: string, what: string, expected: string): never {
   throw new ConfigError(`${path}: "${what}" must be ${expected}`);
 }
 
+/** Throws a ConfigError naming the first key of `body` that is not in `allowed`; `where` is the section path ("" at the top level). */
+function rejectUnknownKeys(path: string, where: string, body: Record<string, unknown>, allowed: readonly string[]): void {
+  for (const key of Object.keys(body)) {
+    if (!allowed.includes(key)) {
+      const full = where === "" ? key : `${where}.${key}`;
+      throw new ConfigError(`${path}: unknown key "${full}"; allowed keys: ${allowed.join(", ")}`);
+    }
+  }
+}
+
 /** The value as a plain object, or a ConfigError naming `what`. */
 function objectOf(path: string, what: string, value: unknown): Record<string, unknown> {
   if (!isObject(value)) bad(path, what, "an object");
@@ -41,6 +53,7 @@ function validateScenarios(path: string, value: unknown): void {
   for (const [tool, scenario] of Object.entries(objectOf(path, "scenarios", value))) {
     const where = `scenarios.${tool}`;
     const body = objectOf(path, where, scenario);
+    rejectUnknownKeys(path, where, body, SCENARIO_KEYS);
     if ("input" in body) objectOf(path, `${where}.input`, body.input);
     if ("freeText" in body && !isStringArray(body.freeText)) bad(path, `${where}.freeText`, "an array of strings");
   }
@@ -57,6 +70,7 @@ function validateFixtures(path: string, value: unknown): void {
   value.forEach((fixture, index) => {
     const where = `fixtures[${index}]`;
     const body = objectOf(path, where, fixture);
+    rejectUnknownKeys(path, where, body, FIXTURE_KEYS);
     if (typeof body.url !== "string") bad(path, `${where}.url`, "a string");
     if ("method" in body && typeof body.method !== "string") bad(path, `${where}.method`, "a string");
     if ("status" in body && !Number.isInteger(body.status)) bad(path, `${where}.status`, "an integer");
@@ -65,16 +79,13 @@ function validateFixtures(path: string, value: unknown): void {
 
 function validateStringListSection(path: string, section: string, key: string, value: unknown): void {
   const body = objectOf(path, section, value);
+  rejectUnknownKeys(path, section, body, [key]);
   if (key in body && !isStringArray(body[key])) bad(path, `${section}.${key}`, "an array of strings");
 }
 
 function validate(path: string, parsed: unknown): CrashtestConfig {
   const config = objectOf(path, "the config file", parsed);
-  for (const key of Object.keys(config)) {
-    if (!(ALLOWED_KEYS as readonly string[]).includes(key)) {
-      throw new ConfigError(`${path}: unknown key "${key}"; allowed keys: ${ALLOWED_KEYS.join(", ")}`);
-    }
-  }
+  rejectUnknownKeys(path, "", config, ALLOWED_KEYS);
   if ("scenarios" in config) validateScenarios(path, config.scenarios);
   if ("identity" in config) validateStringMap(path, "identity", config.identity, isStringArray, "an array of strings");
   if ("env" in config) validateStringMap(path, "env", config.env, (entry) => typeof entry === "string", "a string");
