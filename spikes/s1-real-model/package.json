@@ -1,0 +1,14 @@
+{
+  "name": "s1-real-model",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mswjs/interceptors": "^0.45.13",
+    "ai": "^7.0.182",
+    "eve": "1.5.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "just-bash": "^3.6.1"
+  }
+}

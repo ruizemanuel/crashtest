@@ -1,0 +1,1 @@
+{ "name": "s4-vercel-sandbox", "private": true, "type": "module", "dependencies": { "@vercel/sandbox": "^5.0.0" } }

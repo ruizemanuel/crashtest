@@ -1,0 +1,25 @@
+{
+  "point": "post-effect-fast",
+  "timingsMs": {
+    "upload": 228,
+    "install": 3491,
+    "run": 11641
+  },
+  "cpu": {
+    "sessionActiveCpuMs": 25780,
+    "totalActiveCpuMs": 25780,
+    "vcpus": 2
+  },
+  "error": null,
+  "summary": {
+    "turnOutcome": "completed",
+    "serverDied": true,
+    "restarted": true,
+    "effects": 2,
+    "callIds": [
+      "mock-tool-call-1-0-1-1",
+      "mock-tool-call-1-0-1-1"
+    ],
+    "wallMs": 11288
+  }
+}

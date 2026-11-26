@@ -1,0 +1,25 @@
+{
+  "point": "post-settle",
+  "timingsMs": {
+    "upload": 235,
+    "install": 3082,
+    "run": 14777
+  },
+  "cpu": {
+    "sessionActiveCpuMs": 22846,
+    "totalActiveCpuMs": 22846,
+    "vcpus": 2
+  },
+  "error": null,
+  "summary": {
+    "turnOutcome": "completed",
+    "serverDied": true,
+    "restarted": true,
+    "effects": 2,
+    "callIds": [
+      "mock-tool-call-1-0-1-1",
+      "mock-tool-call-2-0-1-1"
+    ],
+    "wallMs": 14443
+  }
+}
