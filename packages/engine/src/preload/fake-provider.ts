@@ -3,7 +3,7 @@
 // (re-adding a label that exists). Pure and JSON-serializable: the preload keeps the state across a crash.
 import { createHash } from "node:crypto";
 import { append, handleCatalog, idempotencyConflict, nextId, own, type CatalogRequest, type Outcome } from "./catalog.ts";
-import { normalizeEndpoint, parseBody, redactBody, redactUrl } from "./normalize.ts";
+import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "./normalize.ts";
 
 export interface FakeRequest {
   method: string;
@@ -55,8 +55,8 @@ export interface ProviderState {
   sets: Record<string, string[]>;
   /** Body hashes already seen per `<METHOD> <host><path>` for PUT, PATCH and DELETE. */
   putHashes: Record<string, string[]>;
-  /** Content hashes already written per `WRITE <relPath>`. */
-  fsWrites: Record<string, string[]>;
+  /** Hash of the last content written per `WRITE <relPath>`; an APPEND to the path forgets it. */
+  fsWrites: Record<string, string>;
 }
 
 export interface FakeProvider {
@@ -152,11 +152,13 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
 
     const url = parseUrl(req.url);
     if (url === null) return respond(400, { error: "invalid_url" }, effect);
+    // Every state key derives from the redacted path: the state is persisted and a URL path can carry a secret.
+    const path = redactPath(url.pathname);
     const request: CatalogRequest = {
       method,
       hostname: url.hostname,
-      path: url.pathname,
-      key: `${url.host}${url.pathname}`,
+      path,
+      key: `${url.host}${path}`,
       query: url.searchParams,
       headers: req.headers,
       body,
@@ -184,11 +186,14 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
   function fsWrite(op: "WRITE" | "APPEND", relPath: string, content: string): FakeEffect {
     const endpoint = `${op} ${relPath}`;
     const effect: FakeEffect = { mutating: true, stateChange: true, endpoint, body: redactBody(parseBody(content)) };
-    if (op === "APPEND") return effect;
+    const slot = `WRITE ${relPath}`;
+    if (op === "APPEND") {
+      delete store.fsWrites[slot];
+      return effect;
+    }
     const hash = sha256(content);
-    const written = own(store.fsWrites, endpoint);
-    if (written?.includes(hash)) return { ...effect, stateChange: false, benign: "same content rewritten" };
-    (store.fsWrites[endpoint] ??= []).push(hash);
+    if (own(store.fsWrites, slot) === hash) return { ...effect, stateChange: false, benign: "same content rewritten" };
+    store.fsWrites[slot] = hash;
     return effect;
   }
 

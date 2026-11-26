@@ -278,6 +278,23 @@ test("fsWrite WRITE is benign when the same content was already written to that 
   assert.equal(p.fsWrite("WRITE", "data/other.txt", "paid").stateChange, true);
 });
 
+test("fsWrite WRITE compares with the last content only: A, B, A is three state changes", () => {
+  const p = createFakeProvider(null);
+  const results = ["A", "B", "A"].map((content) => p.fsWrite("WRITE", "data/receipt.txt", content));
+  assert.deepEqual(results.map((r) => r.stateChange), [true, true, true]);
+  assert.deepEqual(results.map((r) => r.benign), [undefined, undefined, undefined]);
+  assert.equal(p.fsWrite("WRITE", "data/receipt.txt", "A").benign, "same content rewritten");
+});
+
+test("an APPEND in between makes the next WRITE of the earlier content a state change", () => {
+  const p = createFakeProvider(null);
+  p.fsWrite("WRITE", "data/log.txt", "A");
+  p.fsWrite("APPEND", "data/log.txt", "more\n");
+  const again = p.fsWrite("WRITE", "data/log.txt", "A");
+  assert.equal(again.stateChange, true);
+  assert.equal(again.benign, undefined);
+});
+
 test("state survives JSON round-trip", () => {
   const a = createFakeProvider(null); a.handle(post("https://api.acme.test/v1/m", { k: 1 }, { "idempotency-key": "k1" }));
   const b = createFakeProvider(JSON.parse(JSON.stringify(a.state)));
@@ -324,6 +341,21 @@ test("the effect never carries secrets from the url or the body", () => {
   assert.equal(JSON.stringify(p.state).includes("\"t\""), false);
 });
 
+test("a secret in the url path never reaches the provider state", () => {
+  const p = createFakeProvider(null);
+  const url = "https://api.telegram.org/bot123:AAx-y/sendMessage?chat=1";
+  const posted = p.handle(post(url, { text: "hi" }));
+  assert.equal(JSON.stringify(p.state).includes("AAx-y"), false);
+  assert.equal(JSON.stringify(posted).includes("AAx-y"), false);
+  const put = p.handle(req("PUT", url, { text: "hi" }));
+  assert.equal(put.effect.stateChange, true);
+  assert.equal(JSON.stringify(p.state).includes("AAx-y"), false);
+  // The redacted key is stable, so a repeat and a lookup of the same URL still line up.
+  assert.equal(p.handle(req("PUT", url, { text: "hi" })).effect.benign, "same request repeated");
+  assert.deepEqual(p.handle(get(url)).body, { items: [{ text: "hi" }] });
+  assert.equal(JSON.stringify(p.state).includes("AAx-y"), false);
+});
+
 test("endpoint normalization", () => {
   assert.equal(normalizeEndpoint("PUT", "https://files.acme.test/receipts/4213.pdf?x=1"), "PUT files.acme.test/receipts/:id.pdf");
   assert.equal(normalizeEndpoint("POST", "https://api.github.com/repos/acme/support/issues/7/labels"), "POST api.github.com/repos/acme/support/issues/:id/labels");
@@ -336,6 +368,10 @@ test("endpoint normalization covers every id shape and keeps ordinary words", ()
     ["https://api.acme.test/v1/users/123e4567-e89b-42d3-a456-426614174000/orders", "POST api.acme.test/v1/users/:id/orders"],
     ["https://api.acme.test/v1/blobs/deadbeef01", "POST api.acme.test/v1/blobs/:id"],
     ["https://api.acme.test/v1/issues/labels/v2", "POST api.acme.test/v1/issues/labels/v2"],
+    ["https://api.stripe.com/v1/payment_intents", "POST api.stripe.com/v1/payment_intents"],
+    ["https://api.stripe.com/v1/balance_transactions", "POST api.stripe.com/v1/balance_transactions"],
+    ["https://api.acme.test/api/send_message", "POST api.acme.test/api/send_message"],
+    ["https://api.stripe.com/v1/payment_intents/pi_3Nabc123/confirm", "POST api.stripe.com/v1/payment_intents/:id/confirm"],
     ["https://slack.com/api/chat.postMessage?token=x", "POST slack.com/api/chat.postMessage"],
     ["https://api.acme.test:8443/v1/m/", "POST api.acme.test:8443/v1/m/"],
     ["https://api.acme.test", "POST api.acme.test/"],

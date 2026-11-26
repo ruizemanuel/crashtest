@@ -11,7 +11,8 @@ const ID_SHAPES = [
   /^\d+$/,
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   /^[0-9a-f]{8,}$/i,
-  /^[A-Za-z]+_[A-Za-z0-9_]{6,}$/, // provider ids: ch_3Nabc123, re_ct_000001
+  // Provider ids such as ch_3Nabc123 and re_ct_000001. Requiring a digit keeps words like payment_intents literal.
+  /^(?=.*\d)[A-Za-z]+_[A-Za-z0-9_]{6,}$/,
 ];
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -83,13 +84,18 @@ function decodeName(raw: string): string {
   }
 }
 
-/** Redacts sensitive query parameters and Telegram-style `bot<digits>:<secret>` path segments, keeping the rest verbatim. */
+/** Redacts Telegram-style `bot<digits>:<secret>` segments, the one kind of secret that lives in a URL path. */
+export function redactPath(path: string): string {
+  return path.replace(/\/bot\d+:[^/]*/g, `/bot${REDACTED}`);
+}
+
+/** Redacts sensitive query parameters and secret path segments, keeping the rest verbatim. */
 export function redactUrl(url: string): string {
   const hashAt = url.indexOf("#");
   const hash = hashAt >= 0 ? url.slice(hashAt) : "";
   const beforeHash = hashAt >= 0 ? url.slice(0, hashAt) : url;
   const queryAt = beforeHash.indexOf("?");
-  const base = (queryAt >= 0 ? beforeHash.slice(0, queryAt) : beforeHash).replace(/\/bot\d+:[^/]*/g, `/bot${REDACTED}`);
+  const base = redactPath(queryAt >= 0 ? beforeHash.slice(0, queryAt) : beforeHash);
   if (queryAt < 0) return base + hash;
   const query = beforeHash
     .slice(queryAt + 1)
