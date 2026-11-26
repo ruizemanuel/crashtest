@@ -11,12 +11,12 @@
 //   CT_LAB_DIR          reserved for the filesystem effect watcher; not read here
 //
 // Runs inside the agent's own process: Node built-ins and the interceptor only, and no output of its own.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HttpRequestInterceptor } from "@mswjs/interceptors/http";
 import type { LedgerEntry } from "../types.ts";
 import { createFakeProvider, type FakeResult, type Fixture, type ProviderState } from "./fake-provider.ts";
-import { redactUrl } from "./normalize.ts";
+import { isRecord, redactUrl } from "./normalize.ts";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]);
 // A Response with one of these statuses must not carry a body.
@@ -30,6 +30,65 @@ function numberFromEnv(name: string, fallback: number): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A short blocking pause: the state is read and written in a section that must not yield to other requests. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+const RETRY_DELAY_MS = 25;
+const RENAME_ATTEMPTS = 5;
+
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
+}
+
+/**
+ * Reads and parses a file of the run directory. Only a missing file means "nothing yet" (null): a read or parse
+ * failure is retried once and then thrown, so a damaged file makes the request fail instead of being taken for an
+ * empty history that the next write would then overwrite.
+ */
+function readRunFile<T>(file: string, parse: (text: string) => T): T | null {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return parse(readFileSync(file, "utf8"));
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return null;
+      if (attempt >= 2) throw new Error(`crashtest preload: ${file} is unreadable: ${(error as Error).message}`, { cause: error });
+      sleepSync(RETRY_DELAY_MS);
+    }
+  }
+}
+
+function parseState(text: string): ProviderState {
+  const parsed: unknown = JSON.parse(text);
+  if (!isRecord(parsed)) throw new TypeError("not a JSON object");
+  return parsed as unknown as ProviderState;
+}
+
+function countLines(text: string): number {
+  return text.split("\n").filter(Boolean).length;
+}
+
+/** Temp file in the same directory, then rename: a reader sees the old state or the new one, never half of it. */
+function writeAtomically(file: string, text: string): void {
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, text);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(temp, file);
+      return;
+    } catch (error) {
+      // Windows refuses to replace a file another process has open for a moment.
+      const transient = errorCode(error) === "EPERM" || errorCode(error) === "EBUSY";
+      if (!transient || attempt >= RENAME_ATTEMPTS) {
+        rmSync(temp, { force: true });
+        throw error;
+      }
+      sleepSync(RETRY_DELAY_MS);
+    }
+  }
 }
 
 function loadFixtures(file: string | undefined): Fixture[] {
@@ -58,21 +117,8 @@ function activate(runDir: string): void {
 
   // The state and the ledger are read again for every request: eve runs more than one preloaded process against
   // the same run directory, and a process that restarts after a crash must continue where the last one died.
-  function loadState(): ProviderState | null {
-    try {
-      return JSON.parse(readFileSync(stateFile, "utf8")) as ProviderState;
-    } catch {
-      return null; // no state yet, or an unreadable one: start the provider afresh rather than fail the agent's request
-    }
-  }
-
-  function nextSeq(): number {
-    try {
-      return readFileSync(ledgerFile, "utf8").split("\n").filter(Boolean).length + 1;
-    } catch {
-      return 1;
-    }
-  }
+  const loadState = (): ProviderState | null => readRunFile(stateFile, parseState);
+  const nextSeq = (): number => (readRunFile(ledgerFile, countLines) ?? 0) + 1;
 
   function record(method: string, url: string, result: FakeResult): void {
     const { effect } = result;
@@ -116,7 +162,7 @@ function activate(runDir: string): void {
     const provider = createFakeProvider(loadState(), fixtures);
     const result = provider.handle({ method: request.method, url: request.url, headers: Object.fromEntries(request.headers), bodyText });
     record(request.method, request.url, result);
-    writeFileSync(stateFile, JSON.stringify(provider.state));
+    writeAtomically(stateFile, JSON.stringify(provider.state));
 
     if (result.effect.mutating && (crashPoint === "post-effect-fast" || crashPoint === "post-effect-slow") && claimCrash()) {
       if (crashPoint === "post-effect-slow") await sleep(holdMs);

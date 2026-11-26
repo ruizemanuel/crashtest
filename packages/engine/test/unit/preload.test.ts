@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,4 +250,34 @@ test("loads alongside existing NODE_OPTIONS", async (t) => {
   assert.equal(out.code, 0, out.stderr);
   assert.equal(readFileSync(join(runDir, "preload.ready"), "utf8"), `${out.pid}\n`);
   assert.equal(readLedger(runDir).length, 1);
+});
+
+test("an unreadable provider state fails the request visibly and is never replaced by a fresh one", async (t) => {
+  // An empty file is what a reader sees between another process's truncate and write; the others are damaged content.
+  for (const damaged of ["", '{"counters":{"refund":4', "null", "[]"]) {
+    const runDir = tempDir(t);
+    const stateFile = join(runDir, "provider-state.json");
+    writeFileSync(stateFile, damaged);
+    const out = await runChild("refund", { runDir, env: { CT_CRASH_POINT: "post-effect-fast" } });
+    assert.equal(out.code, 0, out.stderr);
+    assert.equal(eventOf(out, "response")?.status, 500, JSON.stringify(damaged));
+    assert.equal(readFileSync(stateFile, "utf8"), damaged);
+    // The run is invalid, not recorded and not crashed: no ledger entry, no marker.
+    assert.deepEqual(readLedger(runDir), []);
+    assert.equal(existsSync(join(runDir, "crashed.marker")), false);
+  }
+});
+
+test("the state is written atomically and leaves nothing behind", async (t) => {
+  const runDir = tempDir(t);
+  const stateFile = join(runDir, "provider-state.json");
+  const first = await runChild("refund", { runDir });
+  const before = statSync(stateFile, { bigint: true }).ino;
+  const second = await runChild("refund", { runDir });
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(second.code, 0, second.stderr);
+  // A new file replaced the old one (rename) instead of the old one being truncated and rewritten in place.
+  assert.notEqual(statSync(stateFile, { bigint: true }).ino, before);
+  assert.deepEqual(readdirSync(runDir).sort(), ["ledger.jsonl", "preload.ready", "provider-state.json"]);
+  assert.equal(JSON.parse(readFileSync(join(runDir, "provider-state.json"), "utf8")).counters.refund, 2);
 });
