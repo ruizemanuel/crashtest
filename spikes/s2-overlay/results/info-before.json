@@ -1,0 +1,351 @@
+{
+  "appRoot": "C:\\Users\\Emanuel\\Desktop\\agent-builder-challenge\\spikes\\s2-overlay",
+  "agentRoot": "C:\\Users\\Emanuel\\Desktop\\agent-builder-challenge\\spikes\\s2-overlay\\agent",
+  "layout": "nested",
+  "status": "ready",
+  "diagnostics": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "model": "anthropic/claude-haiku-5.5",
+  "instructions": "instructions.md (system)",
+  "skills": [],
+  "tools": [
+    "bash",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "web_fetch",
+    "web_search",
+    "agent",
+    "notify"
+  ],
+  "toolInputSchemas": {
+    "root": {
+      "bash": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The shell command to execute."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Seconds to wait for the command before it keeps running in the background. Defaults to 60; values above 120 wait 120, and values below 1 wait 1."
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false
+      },
+      "read_file": {
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "description": "The path to the file to read: absolute, relative to the workspace root, or beginning with $HOME/."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of lines to return. Defaults to 2000."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based line number to start from. Defaults to 1."
+          }
+        },
+        "required": [
+          "filePath"
+        ],
+        "additionalProperties": false
+      },
+      "write_file": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Complete replacement file contents."
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The path to the file to write: absolute, relative to the workspace root, or beginning with $HOME/."
+          }
+        },
+        "required": [
+          "content",
+          "filePath"
+        ],
+        "additionalProperties": false
+      },
+      "edit_file": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the file to edit (relative or absolute)"
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "oldText": {
+                  "type": "string",
+                  "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+                },
+                "newText": {
+                  "type": "string",
+                  "description": "Replacement text for this targeted edit."
+                }
+              },
+              "required": [
+                "oldText",
+                "newText"
+              ]
+            },
+            "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+          }
+        },
+        "required": [
+          "path",
+          "edits"
+        ]
+      },
+      "web_fetch": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "text",
+              "html"
+            ],
+            "description": "The format to return the content in (text, markdown, or html). HTML responses are automatically converted to the requested format. Defaults to \"markdown\"."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Optional timeout in seconds, greater than 0. Defaults to 30, max 120."
+          },
+          "url": {
+            "type": "string",
+            "description": "The fully-formed URL to fetch content from. Must start with https://."
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "agent": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "The message to send to the agent, with everything it needs to do the work."
+          },
+          "taskId": {
+            "description": "The id of a task this tool started, copied from its \"Started task\" receipt or the [Tasks] note, to send it this input. Omit it to start a new task.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "notify": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "subagents": {}
+  },
+  "subagents": [],
+  "schedules": [],
+  "channels": [
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/health"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "HEAD",
+      "urlPath": "/eve/v1/health"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/info"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/connections/:name/callback/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/connections/:name/callback/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/connections/:name/callback/:attemptId/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/connections/:name/callback/:attemptId/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/callback/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/.well-known/workflow/v1/webhook/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/.well-known/workflow/v1/webhook/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "PUT",
+      "urlPath": "/.well-known/workflow/v1/webhook/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "PATCH",
+      "urlPath": "/.well-known/workflow/v1/webhook/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "DELETE",
+      "urlPath": "/.well-known/workflow/v1/webhook/:token"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/session"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/session/:sessionId"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/session/:sessionId/cancel"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/session/:sessionId/compact"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/session/:sessionId/clear"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/session/:sessionId/end"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "POST",
+      "urlPath": "/eve/v1/session/:sessionId/reset"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/session/:sessionId/stubs"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/session/:sessionId/stream"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/session/:sessionId/descendants/stream"
+    },
+    {
+      "name": "eve",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/eve/v1/session/:parentSessionId/subagents/:callId/:childSessionId/stream"
+    },
+    {
+      "name": "home",
+      "kind": "http",
+      "method": "GET",
+      "urlPath": "/"
+    },
+    {
+      "name": "home",
+      "kind": "http",
+      "method": "HEAD",
+      "urlPath": "/"
+    }
+  ],
+  "messaging": {
+    "create": "/eve/v1/session",
+    "messages": "/eve/v1/session/:sessionId",
+    "stream": "/eve/v1/session/:sessionId/stream"
+  },
+  "artifacts": {
+    "compiledManifest": "C:\\Users\\Emanuel\\Desktop\\agent-builder-challenge\\spikes\\s2-overlay\\.eve\\compile\\compiled-agent-manifest.json",
+    "discoveryManifest": "C:\\Users\\Emanuel\\Desktop\\agent-builder-challenge\\spikes\\s2-overlay\\.eve\\discovery\\agent-discovery-manifest.json",
+    "diagnostics": "C:\\Users\\Emanuel\\Desktop\\agent-builder-challenge\\spikes\\s2-overlay\\.eve\\discovery\\diagnostics.json",
+    "moduleMap": "C:\\Users\\Emanuel\\Desktop\\agent-builder-challenge\\spikes\\s2-overlay\\.eve\\compile\\module-map.mjs",
+    "metadata": "C:\\Users\\Emanuel\\Desktop\\agent-builder-challenge\\spikes\\s2-overlay\\.eve\\compile\\compile-metadata.json"
+  }
+}
