@@ -1,0 +1,8 @@
+node_modules/
+.eve/
+.spike/
+.ct-run/
+.env*
+!.env.example
+.vercel/
+*.log
