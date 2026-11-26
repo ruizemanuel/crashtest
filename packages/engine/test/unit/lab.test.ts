@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { EngineError } from "../../src/errors.ts";
-import { createLab, labEnv, removeLab } from "../../src/lab.ts";
+import { preloadImportFlag } from "../../src/driver/process.ts";
+import { createLab, labEnv, preloadedLabEnv, removeLab } from "../../src/lab.ts";
+import { preloadPath } from "../../src/paths.ts";
 
 const EVE_STUB = JSON.stringify({ name: "eve", version: "1.5.0", bin: { eve: "bin/eve.js" } });
 
@@ -313,4 +315,25 @@ test("labEnv drops credential-looking names and provider prefixes, keeps ordinar
     {},
   );
   assert.deepEqual(env, { HOME: "/h", NODE_OPTIONS: "--import=x" });
+});
+
+test("preloadedLabEnv scrubs credentials and stale CT_* variables, disables telemetry and appends the preload", () => {
+  const flag = preloadImportFlag(preloadPath());
+  const env = preloadedLabEnv(
+    { PATH: "p", NODE_OPTIONS: "--max-old-space-size=2048", GH_TOKEN: "g", CT_FIXTURES: "stale.json", ct_crash_point: "post-settle" },
+    { CT_RUN_DIR: "r", CT_CRASH_POINT: "none" },
+  );
+  assert.deepEqual(env, {
+    PATH: "p",
+    NODE_OPTIONS: `--max-old-space-size=2048 ${flag}`,
+    CT_RUN_DIR: "r",
+    CT_CRASH_POINT: "none",
+    EVE_TELEMETRY_DISABLED: "1",
+  });
+});
+
+test("preloadedLabEnv appends the preload to NODE_OPTIONS given in extra, or uses the flag alone", () => {
+  const flag = preloadImportFlag(preloadPath());
+  assert.equal(preloadedLabEnv({ NODE_OPTIONS: "--base" }, { NODE_OPTIONS: "--configured" }).NODE_OPTIONS, `--configured ${flag}`);
+  assert.equal(preloadedLabEnv({}, {}).NODE_OPTIONS, flag);
 });

@@ -6,12 +6,11 @@ import type { ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CrashtestConfig } from "../config.ts";
-import { labEnv, type Lab } from "../lab.ts";
-import { preloadPath } from "../paths.ts";
+import { preloadedLabEnv, type Lab } from "../lab.ts";
 import type { Cell, CellId, LedgerEntry, RunSummary, ToolInfo } from "../types.ts";
 import { HealthMonitor } from "./health.ts";
 import { freePort, killPort, listenerPids } from "./ports.ts";
-import { killTree, preloadImportFlag, spawnTracked, withPreload } from "./process.ts";
+import { killTree, spawnTracked } from "./process.ts";
 import { parseStream, type ParsedStream } from "./stream.ts";
 
 export interface RunCellOptions {
@@ -46,6 +45,7 @@ const EXIT_WAIT_MS = 5000;
 const PORT_RELEASE_MS = 5000;
 const READY_LINE = /^\[DEV\] ready at /m;
 const LOG_TAIL_CHARS = 2000;
+const BODY_CHARS = 300;
 
 /** `<outDir>/runs/<tool>/<cellId>-a<attempt>`: one directory per attempt, so evidence of earlier attempts stays. */
 export function runDirFor(lab: Lab, tool: string, cellId: CellId, attempt: number): string {
@@ -141,6 +141,7 @@ async function driveCell(ctx: CellContext, d: Drive, server: { child: ChildProce
   let child = first.child;
   let monitor = monitorFor(ctx, child);
   let answered = new Set<string>(); // per server life: an approval still open after a restart is answered again
+  const lastFailure: { stream?: string; approval?: string } = {};
   while (true) {
     const wait = Math.min(POLL_MS, ctx.deadline - Date.now());
     if (wait <= 0) break;
@@ -171,22 +172,36 @@ async function driveCell(ctx: CellContext, d: Drive, server: { child: ChildProce
       continue;
     }
 
-    const stream = await readStream(ctx, created);
-    if (stream === null) continue;
-    d.stream = stream;
-    for (const interactionId of stream.openInteractions) {
+    const read = await readStream(ctx, created);
+    if (!read.ok) {
+      lastFailure.stream = read.problem;
+      if (read.terminal) {
+        d.turnOutcome = "stream-failed";
+        d.errors.push(read.problem);
+        return;
+      }
+      continue;
+    }
+    d.stream = read.stream;
+    for (const interactionId of read.stream.openInteractions) {
       if (answered.has(interactionId)) continue;
-      if (await approve(ctx, created, interactionId)) {
+      const answer = await approve(ctx, created, interactionId);
+      if (answer.ok) {
         answered.add(interactionId);
         d.approvals += 1;
+      } else {
+        lastFailure.approval = answer.problem;
       }
     }
-    if (stream.turnOutcome !== null) {
-      d.turnOutcome = stream.turnOutcome;
+    if (read.stream.turnOutcome !== null) {
+      d.turnOutcome = read.stream.turnOutcome;
       return;
     }
   }
+  // Without the last failures, a rejected answer or an unreadable stream would look like a slow turn.
   d.errors.push(`the turn did not settle within ${Math.round((ctx.o.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000)} s`);
+  if (lastFailure.stream !== undefined) d.errors.push(`last ${lastFailure.stream}`);
+  if (lastFailure.approval !== undefined) d.errors.push(`last ${lastFailure.approval}`);
 }
 
 /** Fresh run directory with the responder's script and, when configured, the fixtures. Returns the fixtures file. */
@@ -201,24 +216,16 @@ function prepareRunDir(runDir: string, o: RunCellOptions): string | undefined {
   return file;
 }
 
-/**
- * The lab environment of the cell: the base environment without credentials and without any `CT_*` left over
- * from the caller, then the config `env`, then the cell's own `CT_*`. The preload is appended to NODE_OPTIONS.
- * CLI telemetry is off: the eve CLI reports an unexpected server exit, which would land in the ledger as an effect.
- */
+/** The lab environment of the cell (see `preloadedLabEnv`): the config `env`, then the cell's own `CT_*`. */
 function cellEnv(o: RunCellOptions, runDir: string, fixturesFile: string | undefined): Record<string, string> {
-  const base = Object.fromEntries(Object.entries(o.baseEnv ?? process.env).filter(([name]) => !/^CT_/i.test(name)));
-  const configured = o.config.env ?? {};
-  return labEnv(base, {
-    ...configured,
-    EVE_TELEMETRY_DISABLED: "1",
+  return preloadedLabEnv(o.baseEnv ?? process.env, {
+    ...o.config.env,
     CT_RUN_DIR: runDir,
     CT_LAB_DIR: o.lab.labDir,
     CT_CRASH_POINT: o.cell.point,
     CT_FAKE_LATENCY_MS: String(o.cell.latencyMs),
     CT_SLOW_HOLD_MS: String(o.cell.holdMs),
     ...(fixturesFile === undefined ? {} : { CT_FIXTURES: fixturesFile }),
-    NODE_OPTIONS: withPreload(configured.NODE_OPTIONS ?? base.NODE_OPTIONS, preloadImportFlag(preloadPath())),
   });
 }
 
@@ -300,41 +307,74 @@ async function createSession(ctx: CellContext, message: string): Promise<string 
       // reported below
     }
     if (res.ok && typeof sessionId === "string" && sessionId !== "") return sessionId;
-    return { problem: `session create failed: HTTP ${res.status} ${text.slice(0, 500)}` };
+    return { problem: `session create failed: ${httpProblem(res.status, text)}` };
   } catch (error) {
-    return { problem: `session create failed: ${(error as Error).message}` };
+    return { problem: `session create failed: ${describeError(error)}` };
   }
 }
 
-/** The recorded history of the session (`follow=false` ends at the recorded tail), or null when it could not be read. */
-async function readStream(ctx: CellContext, sessionId: string): Promise<ParsedStream | null> {
+async function readStream(ctx: CellContext, sessionId: string): Promise<StreamRead> {
   const signal = timeoutSignal(ctx, REQUEST_TIMEOUT_MS);
-  if (signal === null) return null;
+  if (signal === null) return { ok: false, terminal: false, problem: "stream read failed: no time left before the cell deadline" };
+  return readSessionStream(ctx.base, sessionId, signal);
+}
+
+async function approve(ctx: CellContext, sessionId: string, interactionId: string): Promise<ApprovalAnswer> {
+  const signal = timeoutSignal(ctx, REQUEST_TIMEOUT_MS);
+  if (signal === null) return { ok: false, problem: `approval answer for ${interactionId} failed: no time left before the cell deadline` };
+  return answerApproval(ctx.base, sessionId, interactionId, signal);
+}
+
+/** Statuses after which the session's stream will not come back: the session is unknown or gone. */
+const STREAM_GONE = new Set([404, 410]);
+
+export type StreamRead = { ok: true; stream: ParsedStream } | { ok: false; terminal: boolean; problem: string };
+
+/**
+ * The recorded history of a session (`follow=false` ends at the recorded tail). A failure keeps the HTTP status and
+ * the start of the body, or the error; it is `terminal` when the session is unknown or gone (404, 410).
+ */
+export async function readSessionStream(base: string, sessionId: string, signal: AbortSignal): Promise<StreamRead> {
   try {
-    const res = await fetch(`${ctx.base}/eve/v1/session/${encodeURIComponent(sessionId)}/stream?follow=false`, { signal });
+    const res = await fetch(`${base}/eve/v1/session/${encodeURIComponent(sessionId)}/stream?follow=false`, { signal });
     const text = await res.text();
-    return res.ok ? parseStream(text) : null;
-  } catch {
-    return null;
+    if (res.ok) return { ok: true, stream: parseStream(text) };
+    return { ok: false, terminal: STREAM_GONE.has(res.status), problem: `stream read failed: ${httpProblem(res.status, text)}` };
+  } catch (error) {
+    return { ok: false, terminal: false, problem: `stream read failed: ${describeError(error)}` };
   }
 }
 
-/** Answer one open interaction with the "approve" option. True when eve accepted the answer. */
-async function approve(ctx: CellContext, sessionId: string, interactionId: string): Promise<boolean> {
-  const signal = timeoutSignal(ctx, REQUEST_TIMEOUT_MS);
-  if (signal === null) return false;
+export type ApprovalAnswer = { ok: true } | { ok: false; problem: string };
+
+/** Answer one open interaction with the "approve" option. A rejected answer keeps the HTTP status and the start of the body. */
+export async function answerApproval(base: string, sessionId: string, interactionId: string, signal: AbortSignal): Promise<ApprovalAnswer> {
   try {
-    const res = await fetch(`${ctx.base}/eve/v1/session/${encodeURIComponent(sessionId)}`, {
+    const res = await fetch(`${base}/eve/v1/session/${encodeURIComponent(sessionId)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ answers: [{ interactionId, optionId: "approve" }] }),
       signal,
     });
-    await res.arrayBuffer();
-    return res.ok;
-  } catch {
-    return false;
+    const text = await res.text();
+    if (res.ok) return { ok: true };
+    return { ok: false, problem: `approval answer for ${interactionId} failed: ${httpProblem(res.status, text)}` };
+  } catch (error) {
+    return { ok: false, problem: `approval answer for ${interactionId} failed: ${describeError(error)}` };
   }
+}
+
+function httpProblem(status: number, body: string): string {
+  const text = body.trim();
+  return `HTTP ${status}${text === "" ? "" : ` ${text.length > BODY_CHARS ? `${text.slice(0, BODY_CHARS)}...` : text}`}`;
+}
+
+/** The error message plus its cause (fetch reports "fetch failed" and keeps the reason, e.g. ECONNREFUSED, in `cause`). */
+function describeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? (error.cause as { code?: unknown; message?: unknown } | undefined) : undefined;
+  const detail = typeof cause?.code === "string" ? cause.code : typeof cause?.message === "string" ? cause.message : undefined;
+  return detail === undefined ? message : `${message} (${detail})`;
 }
 
 /** A signal that aborts after `cap` ms or at the cell deadline, whichever comes first; null when the deadline passed. */

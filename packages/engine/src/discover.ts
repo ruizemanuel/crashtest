@@ -2,11 +2,11 @@
 // engine never parses the user's TypeScript. Authored tools are the files in `agent/tools/`: `eve info`
 // also lists framework default tools (bash, read_file, ...) that are not the user's to test.
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CrashtestConfig } from "./config.ts";
 import { EngineError } from "./errors.ts";
-import { labEnv, type Lab } from "./lab.ts";
+import { preloadedLabEnv, type Lab } from "./lab.ts";
 import type { EveFacts, JsonSchema, ToolInfo } from "./types.ts";
 
 export interface Discovery {
@@ -23,6 +23,8 @@ const TOOL_FILE = /\.(ts|mts|js|mjs)$/;
 const NOT_A_TOOL = /\.(spec|test)\./;
 const REPLAY_NEVER = /\breplay\?:\s*["']never["']/;
 const TAIL_CHARS = 2000;
+/** Run directory of the discovery under `<outDir>/runs/`; the leading underscore keeps it apart from tool names. */
+const DISCOVER_RUN = "_discover";
 
 interface EveInfo {
   status?: unknown;
@@ -78,13 +80,17 @@ function asSchema(value: unknown): JsonSchema | null {
 
 /**
  * Runs `eve info --json` in the lab and checks that the overlay took effect and that eve found no errors.
- * CLI telemetry is off: discovery runs without the preload, so eve would send it for real, from a detached
- * flush process that outlives `eve info` with the lab as its working directory (on Windows the lab then cannot be wiped).
+ * It runs with the preload (no crash point) in its own run directory, `<outDir>/runs/_discover`: eve can fetch
+ * at this point too (its model catalog), and no request may leave the lab. Telemetry is off (see `preloadedLabEnv`):
+ * its detached flush process would keep the lab as its working directory, and on Windows the lab then cannot be wiped.
  */
 function readEveInfo(lab: Lab): EveInfo {
+  const runDir = join(lab.outDir, "runs", DISCOVER_RUN);
+  rmSync(runDir, { recursive: true, force: true, maxRetries: 5 });
+  mkdirSync(runDir, { recursive: true });
   const result = spawnSync(process.execPath, [lab.eveBin, "info", "--json"], {
     cwd: lab.labDir,
-    env: labEnv(process.env, { EVE_TELEMETRY_DISABLED: "1" }),
+    env: preloadedLabEnv(process.env, { CT_RUN_DIR: runDir, CT_CRASH_POINT: "none" }),
     encoding: "utf8",
     timeout: INFO_TIMEOUT_MS,
     maxBuffer: 64 * 1024 * 1024,

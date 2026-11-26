@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { resolveEveBin } from "./driver/process.ts";
+import { preloadImportFlag, resolveEveBin, withPreload } from "./driver/process.ts";
 import { EngineError } from "./errors.ts";
+import { preloadPath } from "./paths.ts";
 
 /** A disposable copy of the app. It lives inside the app, so Node finds the app's node_modules by walking up. */
 export interface Lab {
@@ -91,6 +92,22 @@ export function labEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): 
     env[name] = value;
   }
   return { ...env, ...extra };
+}
+
+/**
+ * The environment for an eve process that runs in the lab with the preload (discovery and cells):
+ * `labEnv` over `base` without any `CT_*` left over from the caller, then `extra`, with eve CLI telemetry
+ * off and the preload appended to NODE_OPTIONS (the one in `extra`, else the one in `base`).
+ * Telemetry is off because the CLI reports from a detached process that outlives the command and, during a
+ * crash cell, reports the unexpected exit, which would otherwise land in the ledger as an effect.
+ */
+export function preloadedLabEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
+  const kept = Object.fromEntries(Object.entries(base).filter(([name]) => !/^CT_/i.test(name)));
+  return labEnv(kept, {
+    ...extra,
+    EVE_TELEMETRY_DISABLED: "1",
+    NODE_OPTIONS: withPreload(extra.NODE_OPTIONS ?? kept.NODE_OPTIONS, preloadImportFlag(preloadPath())),
+  });
 }
 
 /**

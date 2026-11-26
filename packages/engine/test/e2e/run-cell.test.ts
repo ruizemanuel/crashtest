@@ -74,6 +74,14 @@ function body(entry: LedgerEntry | undefined): Record<string, unknown> {
   return entry.body as Record<string, unknown>;
 }
 
+/** The non-empty string at `key` of the entry's body: a missing id must never compare equal to another missing id. */
+function field(entry: LedgerEntry | undefined, key: string): string {
+  const value = body(entry)[key];
+  assert.equal(typeof value, "string", `body.${key} is a string: ${JSON.stringify(entry?.body)}`);
+  assert.match(value as string, /\S/, `body.${key} is not empty`);
+  return value as string;
+}
+
 function describe(summary: RunSummary): string {
   const { ledger, calls, ...rest } = summary;
   return JSON.stringify({ ...rest, calls, ledger: ledger.map((e) => ({ endpoint: e.endpoint, stateChange: e.stateChange, body: e.body })) });
@@ -103,7 +111,7 @@ test("smoke: post-effect-fast stable replays with the same call id", E2E, async 
   const fx = effects(s);
   assert.equal(fx.length, 2, describe(s));
   // Design fact: eve replays the interrupted step with the call id it derived the first time.
-  assert.equal(body(fx[0]).callId, body(fx[1]).callId, describe(s));
+  assert.equal(field(fx[0], "callId"), field(fx[1], "callId"), describe(s));
 });
 
 test("post-effect-fast fresh: new id, rewritten text, same identity", E2E, async (t) => {
@@ -113,9 +121,9 @@ test("post-effect-fast fresh: new id, rewritten text, same identity", E2E, async
   assert.equal(s.turnOutcome, "completed", describe(s));
   const fx = effects(s);
   assert.equal(fx.length, 2, describe(s));
-  assert.notEqual(body(fx[0]).callId, body(fx[1]).callId, describe(s));
-  assert.ok(String(body(fx[1]).text).endsWith("(rewritten 2)"), describe(s));
-  assert.equal(body(fx[0]).orderId, body(fx[1]).orderId);
+  assert.notEqual(field(fx[0], "callId"), field(fx[1], "callId"), describe(s));
+  assert.ok(field(fx[1], "text").endsWith("(rewritten 2)"), describe(s));
+  assert.equal(field(fx[0], "orderId"), field(fx[1], "orderId"));
 });
 
 test("post-effect-slow: abandoned call, model retry in the same turn", E2E, async (t) => {
@@ -126,9 +134,9 @@ test("post-effect-slow: abandoned call, model retry in the same turn", E2E, asyn
   assert.ok(s.calls.some((c) => c.tool === "naive" && c.outcome === "abandoned"), describe(s));
   const fx = effects(s);
   assert.equal(fx.length, 2, describe(s));
-  assert.notEqual(body(fx[0]).callId, body(fx[1]).callId, describe(s));
+  assert.notEqual(field(fx[0], "callId"), field(fx[1], "callId"), describe(s));
   // Design fact: the op-key uses the turn id, so the model's retry must run in the same turn.
-  assert.equal(body(fx[0]).turnId, body(fx[1]).turnId, describe(s));
+  assert.equal(field(fx[0], "turnId"), field(fx[1], "turnId"), describe(s));
 });
 
 test("post-settle on readonly: framework startup creates no effects", E2E, async (t) => {

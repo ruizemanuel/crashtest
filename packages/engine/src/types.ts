@@ -17,7 +17,7 @@ export interface RunSummary {
   tool: string; cellId: CellId; attempt: number; crashPoint: CrashPoint; idMode: IdMode; latencyMs: number; holdMs: number;
   eveVersion: string; port: number; sessionId: string | null; preloadReady: boolean; marker: string | null;
   serverDied: boolean; killedBy: "crash-point" | "harness" | "unexpected" | null; restarted: boolean;
-  turnOutcome: string;       // completed|failed|cancelled|timeout|startup-failed|died-after-resume
+  turnOutcome: string;       // completed|failed|cancelled|timeout|startup-failed|died-after-resume|stream-failed
   approvals: number; calls: StreamCall[]; ledger: LedgerEntry[]; wallMs: number; runDir: string; error?: string;
 }
 export type VerdictKind = "clean" | "dup" | "phantom-failure" | "lost-effect" | "invalid";
