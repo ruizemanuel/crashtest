@@ -7,7 +7,17 @@ import { hashTree, prepareLab, tool, zooDir } from "./helpers.ts";
 test("smoke: discover the zoo", { timeout: 900_000 }, async () => {
   const before = hashTree(zooDir, ["node_modules", ".crashtest", ".eve"]);
   const { lab, discovery } = await prepareLab(zooDir);
-  assert.deepEqual(discovery.tools.map((t) => t.name), ["approval_naive", "naive", "readonly"]);
+  assert.deepEqual(discovery.tools.map((t) => t.name), [
+    "approval_naive",
+    "benign_labels",
+    "callid_guard",
+    "check_before_act",
+    "naive",
+    "opkey_guard",
+    "phantom_failure",
+    "readonly",
+    "upstream_key",
+  ]);
   assert.equal(discovery.eve.version, "1.5.0"); assert.equal(discovery.eve.capabilities.replayNever, false);
   assert.deepEqual(Object.keys((tool(discovery, "naive").inputSchema as any).properties), ["to", "orderId", "text"]);
   assert.ok(existsSync(join(lab.labDir, "agent", "agent.ctorig.spec.ts")));
