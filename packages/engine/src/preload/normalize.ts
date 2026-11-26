@@ -84,9 +84,18 @@ function decodeName(raw: string): string {
   }
 }
 
-/** Redacts Telegram-style `bot<digits>:<secret>` segments, the one kind of secret that lives in a URL path. */
+// Secrets that live in a URL path: Telegram `bot<digits>:<secret>`, Slack incoming webhooks
+// `/services/T<team>/B<bot>/<secret>` and Discord webhooks `/api[/v<n>]/webhooks/<id>/<token>`.
+// A webhook URL is the credential itself, so everything from the team (Slack) or the token (Discord) on is dropped.
+const PATH_SECRETS: Array<[RegExp, string]> = [
+  [/\/bot\d+:[^/]*/g, `/bot${REDACTED}`],
+  [/\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[^/]+/g, `/services/${REDACTED}`],
+  [/(\/api(?:\/v\d+)?\/webhooks\/\d+)\/[^/]+/g, `$1/${REDACTED}`],
+];
+
+/** Redacts the secrets that live in a URL path. */
 export function redactPath(path: string): string {
-  return path.replace(/\/bot\d+:[^/]*/g, `/bot${REDACTED}`);
+  return PATH_SECRETS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), path);
 }
 
 /** Redacts sensitive query parameters and secret path segments, keeping the rest verbatim. */

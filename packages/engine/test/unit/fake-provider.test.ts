@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hostSupportsIdempotency, hostSupportsLookup } from "../../src/preload/catalog.ts";
 import { createFakeProvider, type FakeRequest, type FakeResult, type Fixture } from "../../src/preload/fake-provider.ts";
-import { normalizeEndpoint, parseBody, redactBody, redactUrl } from "../../src/preload/normalize.ts";
+import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "../../src/preload/normalize.ts";
 
 const FORM = { "content-type": "application/x-www-form-urlencoded" };
 
@@ -354,6 +354,25 @@ test("a secret in the url path never reaches the provider state", () => {
   assert.equal(p.handle(req("PUT", url, { text: "hi" })).effect.benign, "same request repeated");
   assert.deepEqual(p.handle(get(url)).body, { items: [{ text: "hi" }] });
   assert.equal(JSON.stringify(p.state).includes("AAx-y"), false);
+});
+
+test("a webhook url whose path is the credential is redacted everywhere", () => {
+  assert.equal(redactPath("/services/T0/B0/XyZsecret"), "/services/[redacted]");
+  assert.equal(redactUrl("https://hooks.slack.com/services/T0/B0/XyZsecret"), "https://hooks.slack.com/services/[redacted]");
+  assert.equal(redactUrl("https://discord.com/api/webhooks/123/tok-en?wait=true"), "https://discord.com/api/webhooks/123/[redacted]?wait=true");
+  assert.equal(redactUrl("https://discordapp.com/api/webhooks/123/tok-en"), "https://discordapp.com/api/webhooks/123/[redacted]");
+  assert.equal(redactUrl("https://discord.com/api/v10/webhooks/123/tok-en/github"), "https://discord.com/api/v10/webhooks/123/[redacted]/github");
+  // Paths that merely look similar stay verbatim.
+  assert.equal(redactPath("/services/billing/invoices"), "/services/billing/invoices");
+  assert.equal(redactPath("/api/webhooks/123"), "/api/webhooks/123");
+
+  const p = createFakeProvider(null);
+  const slack = p.handle(post("https://hooks.slack.com/services/T0/B0/XyZsecret", { text: "hi" }));
+  assert.equal(slack.effect.endpoint, "POST hooks.slack.com/services/[redacted]");
+  const discord = p.handle(post("https://discord.com/api/webhooks/123/tok-en", { content: "hi" }));
+  assert.equal(discord.effect.endpoint, "POST discord.com/api/webhooks/:id/[redacted]");
+  assert.equal(JSON.stringify({ state: p.state, slack, discord }).includes("XyZsecret"), false);
+  assert.equal(JSON.stringify({ state: p.state, slack, discord }).includes("tok-en"), false);
 });
 
 test("endpoint normalization", () => {
