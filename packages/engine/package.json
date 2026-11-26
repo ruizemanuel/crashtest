@@ -22,7 +22,9 @@
     "test:e2e:smoke": "node --test --test-concurrency=1 --test-name-pattern=smoke \"test/e2e/**/*.test.ts\""
   },
   "dependencies": {
-    "@mswjs/interceptors": "^0.45.13"
+    "@mswjs/interceptors": "^0.45.13",
+    "diff": "^9.0.0",
+    "ts-morph": "^28.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.19.4",
