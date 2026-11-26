@@ -6,6 +6,9 @@
   "bin": {
     "crashtest": "dist/cli.js"
   },
+  "engines": {
+    "node": ">=24.2"
+  },
   "files": [
     "dist",
     "templates",
@@ -16,7 +19,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test \"test/unit/**/*.test.ts\"",
     "test:e2e": "node --test --test-concurrency=1 \"test/e2e/**/*.test.ts\"",
-    "test:e2e:smoke": "node --test --test-concurrency=1 \"test/e2e/smoke.test.ts\""
+    "test:e2e:smoke": "node --test --test-concurrency=1 --test-name-pattern=smoke \"test/e2e/**/*.test.ts\""
   },
   "dependencies": {
     "@mswjs/interceptors": "^0.45.13"
