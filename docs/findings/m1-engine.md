@@ -3,7 +3,7 @@
 Summary (2026-11-26; engine at commit `809f68e`, whose engine code equals `ccd4016` because `809f68e` only adds CI;
 Windows 10, Node 24.15.0; every run used the scripted mock model, so no tokens were spent and no AI Gateway key was
 used):
-- **Design facts hold** with eve 1.5.0: in the stable cell both effects carry the same call id
+- **The replay assumptions hold** with eve 1.5.0: in the stable cell both effects carry the same call id
   (`mock-tool-call-1-0-1-1`), and the post-effect-slow retry runs in the same turn (`turn_0`), in 6 of 6 runs of
   each cell.
 - **The zoo rates every tool as designed**: 10 tools, 1 to 5 stars plus one not evaluated, 73 runs, 929.8 s of
@@ -229,3 +229,88 @@ token).
 | in practice | on the SRE template's eve 1.2.0, `plan`, four baseline-only lanes and one full lane ran: baselines, auto-approve, all four crash points, `eve dev --resume`, the model retry after an interrupted call |
 
 **Decision: FALLBACK** — none of the three real-template tools can be rated in the lab today (two need channel sessions the lab cannot create, one only changes eve session state, and the triage template does not run as published), so the reference agent leads the demo.
+
+## M2 fix verification
+
+The reference agent `examples/acme-support` (six tools, eve 1.5.0) through the demo flow: `crashtest run`, then
+`crashtest fix --all --apply --report .crashtest/report.json`, then `crashtest run` again. Source: the e2e test
+`acme: 1 star to 5 stars` (`test/e2e/acme.test.ts`), which drives the CLI on a fresh copy of the example at
+`examples/acme-support/.crashtest/e2e-copy`. Git ignores that directory, so the first report records commit
+`7ac9f32` with a clean tree, `fix` takes its before ratings from that report instead of running new lanes, and the
+example itself stays unprotected. Windows 10, Node 24.15.0, scripted mock model and fake provider: no tokens were
+spent and no request left the machine. The test ran twice with the same verdicts in every cell; the first run failed
+only its last check (see the notes below).
+
+### Before and after
+
+| Tool | Before | Cells before (fast-stable / fast-fresh / slow / post-settle) | Chosen | After | Cells after |
+|---|---|---|---|---|---|
+| `refund_payment` | 1 | dup (stable) / dup (fresh) / dup (retry) / dup (retry) | upstream-key | 5 | clean (1 benign: key replay) in all four |
+| `post_slack_update` | 2 (approval) | dup (stable) / dup (fresh) / clean (abandoned) / clean (abandoned) | ledger-guard | 5 | clean (abandoned) in all four |
+| `send_email` | 3 | clean (1 benign: key replay) / dup (fresh) / dup (retry) / dup (retry) | ledger-guard | 5 | clean (uncertain) / clean (uncertain) / clean (uncertain) / clean (success) |
+| `upload_receipt` | 4 | phantom-failure in all four (`Upload failed with status 412`) | ledger-guard | 5 | clean (uncertain) / clean (uncertain) / clean (uncertain) / clean (success) |
+| `add_ticket_label` | 5, benign repeats | clean (1 benign: label already present) in all four | none | 5 | as before |
+| `lookup_order` | not evaluated (no effect) | — | none | not evaluated | — |
+| **Agent** | **1**, 5 of 6 tools evaluated | | | **5**, 5 of 6 tools evaluated | |
+
+Every non-clean verdict before the fix reproduced 2 of 2. After the fix the badge reads `★★★★★ eve 1.5.0`.
+
+### Strategy per tool and why
+
+- **`refund_payment`: upstream-key.** Both codemods apply (one `fetch` to Stripe, which honors `Idempotency-Key`)
+  and both reach 5 stars in 6 runs. On the tie `fix` keeps the earlier strategy, `upstream-key`, which leaves the
+  tool's flow as it is. The key is `opKey(ctx, { chargeId, amount, reason })`. The input has no free text, so every
+  attempt in a turn sends the same key with the same body, and the fake Stripe answers the repeat from its stored
+  response (a benign repeat in each cell). The ledger-guard candidate's cells were clean (uncertain) three times and
+  clean (success) after post-settle.
+- **`post_slack_update`: ledger-guard.** Slack honors no idempotency key, so upstream-key does not apply ("no fetch
+  call to an idempotency-capable host") and runs no lane. ledger-guard reaches 5 stars in 6 runs, with the approval
+  still asked once per run. eve recovered every crash cell of this lane as interrupted (the call ends `abandoned`),
+  and the scripted model, as with `approval_naive` in M1, does not issue an interrupted approved call again, so no
+  attempt read the guard's record and one post went out per cell. The unprotected tool's call was replayed in the
+  two fast cells instead.
+- **`send_email`: ledger-guard, because upstream-key reaches only 4 stars.** Both codemods apply. upstream-key
+  replaces `Idempotency-Key: ctx.callId` with `opKey(ctx, { to, orderId })` and rated 4 stars in 9 runs. The
+  fast-stable cell is clean (same key, same body), but in the fast-fresh, slow and post-settle cells the call that
+  comes again has a rewritten `subject` and `body`. Resend then gets the same key with a different body and answers
+  409 (`invalid_idempotent_request`); the tool throws on a status that is not 2xx, so the model is told `Email failed
+  with status 409` about an email that was sent (phantom-failure, 2 of 2 in each of the three cells). The free-text
+  fields cannot go into the key, since they change between attempts, and without them the provider rejects the
+  repeat instead of deduplicating it. ledger-guard stops the repeat before the request: 5 stars in 6 runs.
+- **`upload_receipt`: ledger-guard.** `files.acme.test` is not an idempotency-capable host, so only ledger-guard
+  applies: 5 stars in 6 runs. A call that comes again after a crash during the upload gets `OUTCOME_UNKNOWN`
+  (uncertain), and the call after post-settle gets the stored result. No second PUT reaches the provider, so the 412
+  that misled the model before never happens.
+- **`add_ticket_label` and `lookup_order`** get no candidates: `No fix needed for add_ticket_label: ★★★★★ (5/5) in
+  lab.` and `No fix attempted for lookup_order: not evaluated (no-effect).`
+
+**Recovery mode changes with ledger-guard.** In all four ledger-guard lanes (the `refund_payment` candidate
+included) eve recovered the two fast cells as interrupted, where it replayed the step for the unprotected tools and
+for both upstream-key candidates. The likely cause: the guard awaits its store before it sends the request, so the
+call's start has reached eve's stream when the process dies, and eve does not run a call again whose start is in
+the recovered stream (eve 1.5.0 docs, "Resuming after a crash"). For the tools without approval the model then
+called again, and the guard answered with `OUTCOME_UNKNOWN` (outcome `uncertain`) instead of a second request.
+
+`--apply` wrote each chosen patch into the copy before the next tool: the first applied patch
+(`post_slack_update`) created `agent/lib/crashtest-idempotency.ts`, and the later ones only changed their tool file.
+
+### Runs and wall time
+
+| Phase | Runs | Wall time, run 2 (run 1) |
+|---|---|---|
+| `run` before | 45 (6 lanes) | 586.4 s (584.6 s) |
+| `fix --all --apply --report …` | 39 (6 candidate lanes; the 2 codemods that did not apply ran none; no before lanes, thanks to the report) | 504.3 s (516.0 s) |
+| `run` after | 32 (6 lanes) | 383.3 s (384.4 s) |
+| Whole test | 116 | 1474.1 s, 24.6 min (1485.2 s) |
+
+The candidate lanes of run 2: `refund_payment` upstream-key 6 runs, 74.2 s, and ledger-guard 6 runs, 71.0 s;
+`post_slack_update` ledger-guard 6 runs, 78.6 s; `send_email` upstream-key 9 runs, 122.4 s, and ledger-guard 6 runs,
+70.8 s; `upload_receipt` ledger-guard 6 runs, 71.7 s. The `fix` wall time also covers discovery for every tool and
+for every patched lab. Both runs gave the same verdict in every cell of every lane.
+
+### Notes
+
+- The first run of the test failed only its last check, that the example's own files did not change. The example's
+  README had been written into the example while the test ran, after the test had hashed the example. `fix` had
+  written its patches into the copy only: the example's tool files were unchanged and it had no `agent/lib/`. The
+  second run passed.
