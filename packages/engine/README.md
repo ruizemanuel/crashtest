@@ -164,10 +164,11 @@ can be committed.
    `agent/hooks/crashtest_probe.ts` and, when the app has `agent/channels/eve.ts`, a lab channel with local
    development auth. Tool files are never changed.
 3. **Preload.** Every eve process in the lab runs with a preload (`NODE_OPTIONS=--import`). It answers every
-   non-loopback HTTP request as a fake provider, writes each request to the run's ledger and kills the process at
-   the cell's crash point. Environment variables that look like credentials (names containing `KEY`, `TOKEN`,
-   `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or `COOKIE`, and names starting with `VERCEL_`, `AI_GATEWAY_`,
-   `ANTHROPIC_` or `OPENAI_`) are removed from the lab's environment, and eve's telemetry is turned off.
+   non-loopback HTTP request as a fake provider, writes each request, and each file write the app makes inside the
+   lab, to the run's ledger and kills the process at the cell's crash point. Environment variables that look like
+   credentials (names containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or `COOKIE`, and names
+   starting with `VERCEL_`, `AI_GATEWAY_`, `ANTHROPIC_` or `OPENAI_`) are removed from the lab's environment, and
+   eve's telemetry is turned off.
 4. **Discovery.** `eve info --json` lists the tools and their input schemas. The tools under test are the files
    at the top level of `agent/tools/` (without `*.spec.*` and `*.test.*`); eve's built-in tools are not tested. An
    authored tool that eve does not list is reported as not evaluated.
@@ -196,7 +197,9 @@ provider) or `invalid` (the run says nothing about the tool, for example because
 reached). An invalid cell is run once more. Any other verdict than `clean` has to show up in 2 of 3 runs to count.
 
 An effect is a mutating request (any method but GET, HEAD and OPTIONS) that reaches the fake provider, even when
-the crash came before the answer: a real provider could have processed it. For Stripe, Slack, Resend and GitHub
+the crash came before the answer: a real provider could have processed it. A file write inside the lab is an effect
+too, counted per file (`WRITE data/state.json`, `APPEND data/outbox.jsonl`): an append always changes state, and a
+write that puts in a file the content it already has is a benign repeat. For Stripe, Slack, Resend and GitHub
 the fake provider keeps state, so a repeat that changes nothing (adding a label that is already there) is a
 benign repeat and does not lower the rating. For other hosts every POST counts, and a PUT, PATCH or DELETE repeated
 with the same body is benign. On every host, a repeat with the same `Idempotency-Key` (or `X-Idempotency-Key`)
@@ -242,15 +245,23 @@ silently weaken the test.
 | `identity` | `{ "<tool>": string[] }` | The input fields that identify one business operation (a recipient, an order id). The recommendations name them as the fields to build an idempotency key from. By default: the required scalar fields that are not free text. |
 | `env` | `{ "<NAME>": string }` | Environment variables for the lab's eve processes. They are applied after the credential-looking variables are removed, so they always reach the app. Requests never leave the lab, so placeholder values are enough. |
 | `fixtures` | `{ "method"?: string, "url": string, "status"?: integer, "body"?: any }[]` | Canned answers of the fake provider, for tools that need a specific response. `url` is matched against the full request URL, where `*` matches any run of characters (including `/`); `method` narrows the match; `status` defaults to 200 and `body` to `{}`. The first matching fixture answers. A mutating request answered by a fixture counts as a state change. |
-| `effects.ignore` | `string[]` | Request URLs that are not effects of the tool, with the same `*` rule, matched against the full URL. |
+| `effects.ignore` | `string[]` | Request URLs, or lab-relative file paths such as `data/cache/*`, that are not effects of the tool, with the same `*` rule, matched against the full URL or path. |
 | `waivers` | `{ "<tool>": string }` | The tool is still tested and rated, and the report shows the reason, but the agent rating leaves it out. |
 | `tools.exclude` | `string[]` | Tools that are not run. `plan` lists them as skipped; the report leaves them out entirely (they do not count in "N of M tools evaluated"). |
 
 ## Limits
 
-- crashtest observes HTTP/1.1 requests made through `fetch`, `node:http` and `node:https`. It does not observe
-  raw TCP (Postgres, Redis, SMTP), HTTP/2, gRPC, file-system writes or effects inside eve sandboxes. A tool whose
-  only effect is one of these shows as not evaluated (no external effect in the baseline).
+- crashtest observes HTTP/1.1 requests made through `fetch`, `node:http` and `node:https`, and the file writes the
+  app makes inside the lab with `node:fs`: `writeFileSync`, `appendFileSync`, `writeFile`, `appendFile` and the
+  `fs.promises` forms of `writeFile` and `appendFile`. Files under `.eve`, `node_modules` or a `.crashtest*`
+  directory at the top of the lab are not effects. It does not observe raw TCP (Postgres, Redis, SMTP), HTTP/2,
+  gRPC, effects inside eve sandboxes, writes outside the lab, writes from child processes, or file changes made
+  through other APIs: a file descriptor (`fs.write`), a stream (`createWriteStream`), an
+  `fs.promises` file handle, `rename`, `copyFile`, `rm` and so on. A tool whose only effect is one of these shows
+  as not evaluated (no external effect in the baseline).
+- For a file write, the 2 s hold of `post-effect-slow` stops the whole process, not just the call, so eve cannot mark
+  the call as interrupted: that cell shows a replay with a new call id, like `post-effect-fast-fresh`, instead of a
+  model retry.
 - Only the six cells above run. A crash before the effect, while an approval is pending, a second crash during
   recovery, or a crash after every event are not tested.
 - Each tool is tested with one input and one call per turn; multi-step scenarios are not supported.

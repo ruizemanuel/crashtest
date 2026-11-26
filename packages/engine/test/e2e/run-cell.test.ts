@@ -148,6 +148,25 @@ test("post-settle on readonly: framework startup creates no effects", E2E, async
   assert.equal(s.turnOutcome, "completed", describe(s));
   assert.ok(s.ledger.length >= 1, `the tool's lookup reached the fake provider: ${describe(s)}`);
   assert.equal(s.ledger.filter((entry) => entry.mutating).length, 0, describe(s));
+  assert.equal(s.ledger.filter((entry) => entry.kind === "fs").length, 0, `eve writes nothing outside .eve in the lab: ${describe(s)}`);
+});
+
+test("fs_effect: the replay after a crash appends the outbox line twice, and both appends are effects", E2E, async (t) => {
+  const s = await run(t, "fs_effect", "post-effect-fast-stable");
+  assert.equal(s.serverDied, true, describe(s));
+  assert.equal(s.killedBy, "crash-point");
+  assert.match(s.marker ?? "", /^post-effect-fast pid=\d+$/);
+  assert.equal(s.restarted, true);
+  assert.equal(s.turnOutcome, "completed", describe(s));
+  // The tool's code imports node:fs on its own, and its writes are observed all the same.
+  const fx = effects(s);
+  assert.equal(fx.length, 2, describe(s));
+  assert.deepEqual(fx.map((entry) => [entry.kind, entry.endpoint, entry.url]), [["fs", "APPEND data/outbox.jsonl", "data/outbox.jsonl"], ["fs", "APPEND data/outbox.jsonl", "data/outbox.jsonl"]]);
+  assert.notEqual(fx[0].pid, fx[1].pid, "the two appends come from two processes");
+  assert.equal(s.ledger.filter((entry) => entry.kind === "fs").length, 2, `eve writes nothing else in the lab outside .eve: ${describe(s)}`);
+  // What the ledger counted is what the tool really wrote.
+  const lines = readFileSync(join(zoo.lab.labDir, "data", "outbox.jsonl"), "utf8").split("\n").filter(Boolean);
+  assert.deepEqual(lines.map((line) => JSON.parse(line) as unknown), fx.map((entry) => entry.body));
 });
 
 test("baseline approval_naive is auto-approved", E2E, async (t) => {

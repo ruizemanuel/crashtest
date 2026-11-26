@@ -33,6 +33,14 @@ test("zoo: smoke: naive rates 1 star", E2E, async (t) => {
   assert.equal(result.rating.stars, 1, detail);
 });
 
+test("zoo: fs_effect rates 1 star, its effect being a file write", E2E, async (t) => {
+  const { result, detail } = await lane(t, "fs_effect");
+  assert.equal(result.rating.stars, 1, detail);
+  // The effect is counted through the same ledger as an HTTP request.
+  const endpoints = new Set(result.rating.cells.flatMap((cell) => cell.evidence.map((item) => item.endpoint)));
+  assert.deepEqual([...endpoints], ["APPEND data/outbox.jsonl"], detail);
+});
+
 test("zoo: approval_naive rates 2 stars", E2E, async (t) => {
   const { result, detail } = await lane(t, "approval_naive");
   assert.equal(result.rating.stars, 2, detail);

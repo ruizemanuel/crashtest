@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -280,4 +280,186 @@ test("the state is written atomically and leaves nothing behind", async (t) => {
   assert.notEqual(statSync(stateFile, { bigint: true }).ino, before);
   assert.deepEqual(readdirSync(runDir).sort(), ["ledger.jsonl", "preload.ready", "provider-state.json"]);
   assert.equal(JSON.parse(readFileSync(join(runDir, "provider-state.json"), "utf8")).counters.refund, 2);
+});
+
+// --- file-system effects -----------------------------------------------------------------------------------------
+
+/** Runs an fs scenario with `lab` as both CT_LAB_DIR and the working directory, as eve dev runs in the lab. */
+async function runInLab(t: TestContext, scenario: string, options: { lab?: string; runDir?: string; env?: Record<string, string> } = {}) {
+  const lab = options.lab ?? tempDir(t);
+  const runDir = options.runDir ?? tempDir(t);
+  const env = { CT_LAB_DIR: lab, CT_TEST_OUTSIDE: tempDir(t), ...options.env };
+  return { out: await runChild(scenario, { runDir, cwd: lab, env }), lab, runDir };
+}
+
+const OUTBOX = `${JSON.stringify({ to: "alice", orderId: "ord_1" })}\n`;
+
+test("an append inside the lab is an effect of the ledger", async (t) => {
+  const { out, lab, runDir } = await runInLab(t, "fs-append");
+  assert.equal(out.code, 0, out.stderr);
+  assert.equal(printedAfter(out), true);
+  // The write itself happened.
+  assert.equal(readFileSync(join(lab, "data", "outbox.jsonl"), "utf8"), OUTBOX);
+  const [entry, ...rest] = readLedger(runDir);
+  assert.equal(rest.length, 0);
+  assert.equal(entry.seq, 1);
+  assert.equal(entry.pid, out.pid);
+  assert.equal(entry.kind, "fs");
+  assert.equal(entry.method, "APPEND");
+  assert.equal(entry.url, "data/outbox.jsonl");
+  assert.equal(entry.endpoint, "APPEND data/outbox.jsonl");
+  // What detection counts.
+  assert.equal(entry.mutating, true);
+  assert.equal(entry.stateChange, true);
+  assert.equal(entry.status, 0);
+  assert.equal("benign" in entry, false);
+  assert.deepEqual(entry.body, { to: "alice", orderId: "ord_1" });
+});
+
+test("every node:fs write form is observed once, through named imports, namespaces and promises", async (t) => {
+  const { out, lab, runDir } = await runInLab(t, "fs-forms");
+  assert.equal(out.code, 0, out.stderr);
+  assert.deepEqual(
+    readLedger(runDir).map((e) => [e.seq, e.kind, e.method, e.url, e.body]),
+    [
+      [1, "fs", "WRITE", "data/a.txt", "one"],
+      [2, "fs", "APPEND", "data/b.log", "two\n"],
+      [3, "fs", "APPEND", "data/c.log", "three\n"],
+      [4, "fs", "WRITE", "data/d.txt", "four"],
+      [5, "fs", "APPEND", "data/e.log", "five\n"],
+      [6, "fs", "WRITE", "data/f.txt", "six"],
+      [7, "fs", "WRITE", "data/g.txt", "seven"],
+      [8, "fs", "APPEND", "data/h.log", "eight\n"],
+      [9, "fs", "WRITE", "data/i.txt", "nine"],
+      [10, "fs", "WRITE", "data/j.txt", "ten"],
+    ],
+  );
+  // Observing a write never changes what it does.
+  assert.equal(readFileSync(join(lab, "data", "g.txt"), "utf8"), "seven");
+  assert.equal(readFileSync(join(lab, "data", "e.log"), "utf8"), "five\n");
+});
+
+test("only effects inside the lab count: eve state, idempotency records, dependencies, the run directory and outside paths are left out", async (t) => {
+  const lab = tempDir(t);
+  const runDir = join(lab, "ct-run"); // a run directory inside the lab is still not an effect of the tool
+  const { out } = await runInLab(t, "fs-ignored", { lab, runDir });
+  assert.equal(out.code, 0, out.stderr);
+  assert.deepEqual(readLedger(runDir).map((e) => [e.method, e.url]), [["WRITE", ".eve-notes/n.txt"], ["WRITE", "data/kept.txt"]]);
+  // The preload's own files were written even though node:fs was wrapped, and none of them is an effect.
+  assert.equal(readFileSync(join(runDir, "note.txt"), "utf8"), "in the run directory");
+  assert.deepEqual(readdirSync(runDir).sort(), ["ledger.jsonl", "note.txt", "preload.ready", "provider-state.json"]);
+});
+
+test("a lab reached through a link is the same lab", async (t) => {
+  // The lab is configured by one path and the process works in it by another, as with /var and /private/var on macOS.
+  const real = tempDir(t);
+  const link = join(tempDir(t), "lab-link");
+  symlinkSync(real, link, "junction");
+  const { out, runDir } = await runInLab(t, "fs-append", { lab: real, env: { CT_LAB_DIR: link } });
+  assert.equal(out.code, 0, out.stderr);
+  assert.deepEqual(readLedger(runDir).map((e) => [e.method, e.url]), [["APPEND", "data/outbox.jsonl"]]);
+});
+
+test("descriptor and stream writes are not observed", async (t) => {
+  const { out, lab, runDir } = await runInLab(t, "fs-unobserved");
+  assert.equal(out.code, 0, out.stderr);
+  assert.equal(readFileSync(join(lab, "data", "fd.txt"), "utf8"), "through a descriptoragain");
+  assert.equal(readFileSync(join(lab, "data", "stream.txt"), "utf8"), "through a stream");
+  assert.deepEqual(readLedger(runDir), []);
+});
+
+test("without CT_LAB_DIR file writes are not observed", async (t) => {
+  const lab = tempDir(t);
+  const runDir = tempDir(t);
+  const out = await runChild("fs-append", { runDir, cwd: lab });
+  assert.equal(out.code, 0, out.stderr);
+  assert.equal(readFileSync(join(lab, "data", "outbox.jsonl"), "utf8"), OUTBOX);
+  assert.deepEqual(readLedger(runDir), []);
+});
+
+test("a repeated write with the same content is benign, a different one is not", async (t) => {
+  const { out, runDir } = await runInLab(t, "fs-write-repeat");
+  assert.equal(out.code, 0, out.stderr);
+  const ledger = readLedger(runDir);
+  assert.deepEqual(ledger.map((e) => [e.endpoint, e.mutating, e.stateChange]), [["WRITE data/state.json", true, true], ["WRITE data/state.json", true, false], ["WRITE data/state.json", true, true]]);
+  assert.equal(ledger[1].benign, "same content rewritten");
+  assert.equal(ledger[2].benign, undefined);
+  const state = JSON.parse(readFileSync(join(runDir, "provider-state.json"), "utf8")) as { fsWrites: Record<string, string> };
+  assert.deepEqual(Object.keys(state.fsWrites), ["WRITE data/state.json"]);
+});
+
+test("the ledger keeps 2 KB of a large write but the comparison sees all of it", async (t) => {
+  const { out, runDir } = await runInLab(t, "fs-large");
+  assert.equal(out.code, 0, out.stderr);
+  const ledger = readLedger(runDir);
+  assert.deepEqual(ledger.map((e) => e.stateChange), [true, true, false]);
+  for (const entry of ledger) {
+    assert.equal(typeof entry.body, "string");
+    assert.equal((entry.body as string).length, 2048);
+  }
+});
+
+test("secrets in a written JSON file are redacted in the ledger and the state, cut or not", async (t) => {
+  const { out, runDir } = await runInLab(t, "fs-secret");
+  assert.equal(out.code, 0, out.stderr);
+  const [small, large] = readLedger(runDir);
+  assert.deepEqual(small.body, { password: "[redacted]", n: 1 });
+  assert.equal(typeof large.body, "string");
+  assert.equal((large.body as string).length, 2048);
+  assert.match(large.body as string, /^\{"apiKey":"\[redacted\]","items":\["item-0"/);
+  for (const file of ["ledger.jsonl", "provider-state.json"]) assert.equal(readFileSync(join(runDir, file), "utf8").includes("hunter2"), false, file);
+});
+
+test("a write that fails is not an effect", async (t) => {
+  const { out, runDir } = await runInLab(t, "fs-failed");
+  assert.equal(out.code, 0, out.stderr);
+  assert.deepEqual(out.events.filter((e) => e.event !== "after").map((e) => e.event), ["failed", "failed", "wrote", "failed"]);
+  assert.deepEqual(readLedger(runDir).map((e) => [e.method, e.url]), [["WRITE", "data/kept.txt"]]);
+});
+
+test("post-effect-fast kills after a file write, whichever form it takes", async (t) => {
+  for (const scenario of ["fs-append", "fs-append-callback", "fs-append-promise"]) {
+    const { out, lab, runDir } = await runInLab(t, scenario, { env: { CT_CRASH_POINT: "post-effect-fast" } });
+    assert.notEqual(out.code, 0, scenario);
+    assert.equal(printedAfter(out), false, scenario);
+    // The write was done and recorded first, then the process died.
+    assert.equal(readFileSync(join(lab, "data", "outbox.jsonl"), "utf8"), OUTBOX, scenario);
+    assert.equal(readFileSync(join(runDir, "crashed.marker"), "utf8"), `post-effect-fast pid=${out.pid}`, scenario);
+    const [entry, ...rest] = readLedger(runDir);
+    assert.equal(rest.length, 0, scenario);
+    assert.equal(entry.endpoint, "APPEND data/outbox.jsonl", scenario);
+    // The state was saved before the process died too.
+    const state = JSON.parse(readFileSync(join(runDir, "provider-state.json"), "utf8")) as { fsWrites: Record<string, string> };
+    assert.deepEqual(state.fsWrites, {}, scenario);
+  }
+});
+
+test("post-effect-slow holds then kills after a file write", async (t) => {
+  const { out, runDir } = await runInLab(t, "fs-append", { env: { CT_CRASH_POINT: "post-effect-slow", CT_SLOW_HOLD_MS: "300" } });
+  assert.notEqual(out.code, 0);
+  assert.equal(printedAfter(out), false);
+  assert.match(readFileSync(join(runDir, "crashed.marker"), "utf8"), /^post-effect-slow pid=\d+$/);
+  const [entry, ...rest] = readLedger(runDir);
+  assert.equal(rest.length, 0);
+  assert.ok(out.exitedAt - Date.parse(entry.ts) >= 300 - TIMER_SLACK_MS, `died ${out.exitedAt - Date.parse(entry.ts)} ms after the write`);
+});
+
+test("the crash of a file write happens once, and the other crash points leave it alone", async (t) => {
+  const lab = tempDir(t);
+  const runDir = tempDir(t);
+  const env = { CT_LAB_DIR: lab, CT_CRASH_POINT: "post-effect-fast" };
+  const first = await runChild("fs-append", { runDir, cwd: lab, env });
+  assert.equal(printedAfter(first), false);
+  const second = await runChild("fs-append", { runDir, cwd: lab, env });
+  assert.equal(second.code, 0, second.stderr);
+  assert.equal(printedAfter(second), true);
+  assert.deepEqual(readLedger(runDir).map((e) => [e.seq, e.pid]), [[1, first.pid], [2, second.pid]]);
+  assert.match(readFileSync(join(runDir, "crashed.marker"), "utf8"), new RegExp(`^post-effect-fast pid=${first.pid}$`));
+
+  for (const point of ["none", "post-settle"]) {
+    const calm = await runInLab(t, "fs-append", { env: { CT_CRASH_POINT: point } });
+    assert.equal(calm.out.code, 0, calm.out.stderr);
+    assert.equal(printedAfter(calm.out), true, point);
+    assert.equal(existsSync(join(calm.runDir, "crashed.marker")), false, point);
+  }
 });

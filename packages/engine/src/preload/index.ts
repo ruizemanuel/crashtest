@@ -1,6 +1,7 @@
 // Loaded into every process of `eve dev` through NODE_OPTIONS=--import. It answers each non-loopback HTTP request
 // with the fake provider, appends the request to the run's ledger, persists the provider state and, at the
-// chosen crash point, SIGKILLs its own process so the engine can watch what eve does on resume.
+// chosen crash point, SIGKILLs its own process so the engine can watch what eve does on resume. File writes of
+// node:fs inside the lab are effects too: they go through the same ledger, state and crash point.
 //
 // Environment (inactive unless CT_RUN_DIR is set):
 //   CT_RUN_DIR          directory holding preload.ready, ledger.jsonl, provider-state.json and crashed.marker
@@ -8,24 +9,40 @@
 //   CT_FAKE_LATENCY_MS  delay before every faked response (default 0)
 //   CT_SLOW_HOLD_MS     how long post-effect-slow waits before the kill (default 2000)
 //   CT_FIXTURES         optional path of a JSON file with an array of fixtures
-//   CT_LAB_DIR          reserved for the filesystem effect watcher; not read here
+//   CT_LAB_DIR          the lab; when set, node:fs writes inside it are recorded as effects (see fs-effects.ts)
 //
 // Runs inside the agent's own process: Node built-ins and the interceptor only, and no output of its own.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { HttpRequestInterceptor } from "@mswjs/interceptors/http";
 import type { LedgerEntry } from "../types.ts";
-import { createFakeProvider, type FakeResult, type Fixture, type ProviderState } from "./fake-provider.ts";
+import { createFakeProvider, type FakeEffect, type FakeResult, type Fixture, type ProviderState } from "./fake-provider.ts";
+import { installFsEffects } from "./fs-effects.ts";
 import { isRecord, redactUrl } from "./normalize.ts";
+
+// Installing the file-system effects patches node:fs and refreshes the live bindings of every named import, this
+// module's too. The two write functions the preload itself uses are taken here, before any patching, so its own
+// files (ledger, state, marker) are never observed.
+const { appendFileSync, writeFileSync } = fs;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]);
 // A Response with one of these statuses must not carry a body.
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+/** A file write is recorded with at most this much of its content (the comparison of repeated writes sees all of it). */
+const FS_BODY_CHARS = 2048;
+/** How long a process waits for its own SIGKILL to arrive before it reports that the kill did not work. */
+const DEATH_WAIT_MS = 10_000;
 
 function numberFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   const value = raw === undefined || raw === "" ? Number.NaN : Number(raw);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/** The already redacted body of a file write, cut at 2 KB: text as it is, JSON as its first characters. */
+function clip(body: unknown): unknown {
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  return text.length > FS_BODY_CHARS ? text.slice(0, FS_BODY_CHARS) : body;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -120,24 +137,27 @@ function activate(runDir: string): void {
   const loadState = (): ProviderState | null => readRunFile(stateFile, parseState);
   const nextSeq = (): number => (readRunFile(ledgerFile, countLines) ?? 0) + 1;
 
-  function record(method: string, url: string, result: FakeResult): void {
-    const { effect } = result;
+  function appendEntry(what: Pick<LedgerEntry, "kind" | "method" | "url" | "body" | "status">, effect: FakeEffect): void {
     const entry: LedgerEntry = {
       seq: nextSeq(),
       ts: new Date().toISOString(),
       pid: process.pid,
-      kind: "http",
-      method: method.toUpperCase(),
-      url: redactUrl(url),
+      kind: what.kind,
+      method: what.method,
+      url: what.url,
       endpoint: effect.endpoint,
       mutating: effect.mutating,
       stateChange: effect.stateChange,
       ...(effect.benign === undefined ? {} : { benign: effect.benign }),
       ...(effect.idempotencyKey === undefined ? {} : { idempotencyKey: effect.idempotencyKey }),
-      body: effect.body,
-      status: result.status,
+      body: what.body,
+      status: what.status,
     };
     appendFileSync(ledgerFile, `${JSON.stringify(entry)}\n`);
+  }
+
+  function record(method: string, url: string, result: FakeResult): void {
+    appendEntry({ kind: "http", method: method.toUpperCase(), url: redactUrl(url), body: result.effect.body, status: result.status }, result.effect);
   }
 
   /** True for exactly one process of the run: the one that creates the marker. */
@@ -149,6 +169,28 @@ function activate(runDir: string): void {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw error;
     }
+  }
+
+  /** The crash point's rule for any effect, HTTP or file: one that may have changed something, once per run. */
+  function crashesAfter(effect: FakeEffect): boolean {
+    return effect.mutating && (crashPoint === "post-effect-fast" || crashPoint === "post-effect-slow") && claimCrash();
+  }
+
+  /**
+   * A file write of the tool that has already happened: the effect goes to the ledger and the state, then the crash
+   * point applies. The caller of a write cannot wait, so the hold of post-effect-slow blocks the whole process.
+   */
+  function recordFileWrite(op: "WRITE" | "APPEND", relPath: string, content: string): void {
+    const provider = createFakeProvider(loadState(), fixtures);
+    const effect = provider.fsWrite(op, relPath, content);
+    appendEntry({ kind: "fs", method: op, url: relPath, body: clip(effect.body), status: 0 }, effect);
+    writeAtomically(stateFile, JSON.stringify(provider.state));
+
+    if (!crashesAfter(effect)) return;
+    if (crashPoint === "post-effect-slow") sleepSync(holdMs);
+    process.kill(process.pid, "SIGKILL");
+    sleepSync(DEATH_WAIT_MS); // the kill is asynchronous on some platforms: never go on from a dying process
+    throw new Error("crashtest preload: the process survived its own SIGKILL");
   }
 
   const interceptor = new HttpRequestInterceptor();
@@ -164,7 +206,7 @@ function activate(runDir: string): void {
     record(request.method, request.url, result);
     writeAtomically(stateFile, JSON.stringify(provider.state));
 
-    if (result.effect.mutating && (crashPoint === "post-effect-fast" || crashPoint === "post-effect-slow") && claimCrash()) {
+    if (crashesAfter(result.effect)) {
       if (crashPoint === "post-effect-slow") await sleep(holdMs);
       process.kill(process.pid, "SIGKILL");
       await new Promise<never>(() => {}); // the kill is asynchronous on some platforms: never answer from a dying process
@@ -175,6 +217,9 @@ function activate(runDir: string): void {
     controller.respondWith(new Response(body, { status: result.status, headers: result.headers }));
   });
   interceptor.apply();
+
+  const labDir = process.env.CT_LAB_DIR;
+  if (labDir) installFsEffects({ labDir, runDir, record: recordFileWrite });
 }
 
 const runDir = process.env.CT_RUN_DIR;

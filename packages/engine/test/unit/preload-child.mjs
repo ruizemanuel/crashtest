@@ -1,10 +1,16 @@
 // Child process for preload.test.ts, started with the preload imported through NODE_OPTIONS.
 // Usage: node preload-child.mjs <scenario>. Every event is one JSON line on stdout, written synchronously
 // so that a line printed before a self-inflicted SIGKILL is never lost.
-import { writeSync } from "node:fs";
+// The file-system scenarios run with the lab as the working directory, and import node:fs the way eve's tool code
+// does (named ESM imports, which only see the preload's wrappers after syncBuiltinESMExports).
+import fs, { appendFile, appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, writeFile, writeFileSync, writeSync } from "node:fs";
+import fsp, { appendFile as appendFilePromise, writeFile as writeFilePromise } from "node:fs/promises";
 import { createServer } from "node:http";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const scenario = process.argv[2];
+const OUTBOX_LINE = `${JSON.stringify({ to: "alice", orderId: "ord_1" })}\n`;
 
 function say(event) {
   writeSync(1, `${JSON.stringify(event)}\n`);
@@ -51,8 +57,86 @@ async function loopback() {
   }
 }
 
+const done = (call) => new Promise((resolve, reject) => call((error) => (error ? reject(error) : resolve())));
+
 switch (scenario) {
   case "idle":
+    break;
+  case "fs-append":
+    mkdirSync("data", { recursive: true });
+    appendFileSync("data/outbox.jsonl", OUTBOX_LINE);
+    break;
+  case "fs-append-callback":
+    mkdirSync("data", { recursive: true });
+    await done((cb) => appendFile("data/outbox.jsonl", OUTBOX_LINE, cb));
+    break;
+  case "fs-append-promise":
+    mkdirSync("data", { recursive: true });
+    await appendFilePromise("data/outbox.jsonl", OUTBOX_LINE);
+    break;
+  case "fs-forms": {
+    mkdirSync("data", { recursive: true });
+    writeFileSync("data/a.txt", "one");
+    appendFileSync("data/b.log", "two\n");
+    writeFileSync("data/c.log", "three\n", { flag: "a" });
+    await done((cb) => writeFile("data/d.txt", "four", cb));
+    await done((cb) => appendFile("data/e.log", "five\n", "utf8", cb));
+    await fs.promises.writeFile("data/f.txt", "six");
+    await writeFilePromise("data/g.txt", Buffer.from("seven"));
+    await fsp.appendFile("data/h.log", "eight\n");
+    writeFileSync(pathToFileURL(join(process.cwd(), "data", "i.txt")), "nine");
+    writeFileSync(join(process.cwd(), "data", "..", "data", "j.txt"), new Uint8Array(Buffer.from("ten")));
+    break;
+  }
+  case "fs-ignored": {
+    for (const dir of [".eve", ".crashtest-idempotency", "node_modules/pkg", ".eve-notes", "data"]) mkdirSync(dir, { recursive: true });
+    writeFileSync(".eve/x.json", "{}");
+    writeFileSync(".crashtest-idempotency/k.json", '{"status":"started"}', { flag: "wx" });
+    writeFileSync("node_modules/pkg/index.js", "1");
+    writeFileSync(join(process.env.CT_TEST_OUTSIDE, "outside.txt"), "outside");
+    writeFileSync(join(process.env.CT_RUN_DIR, "note.txt"), "in the run directory");
+    // Only the first segment is matched, and exactly: these two are effects.
+    writeFileSync(".eve-notes/n.txt", "notes");
+    writeFileSync("data/kept.txt", "kept");
+    break;
+  }
+  case "fs-unobserved": {
+    mkdirSync("data", { recursive: true });
+    const fd = openSync("data/fd.txt", "w");
+    writeFileSync(fd, "through a descriptor");
+    writeSync(fd, "again");
+    closeSync(fd);
+    const stream = createWriteStream("data/stream.txt");
+    await new Promise((resolve, reject) => stream.once("error", reject).end("through a stream", resolve));
+    break;
+  }
+  case "fs-write-repeat":
+    mkdirSync("data", { recursive: true });
+    writeFileSync("data/state.json", '{"a":1}');
+    writeFileSync("data/state.json", '{"a":1}');
+    writeFileSync("data/state.json", '{"a":2}');
+    break;
+  case "fs-large": {
+    const head = "x".repeat(3000);
+    writeFileSync("big.txt", `${head}A`);
+    writeFileSync("big.txt", `${head}B`);
+    writeFileSync("big.txt", `${head}B`);
+    break;
+  }
+  case "fs-secret":
+    writeFileSync("small.json", JSON.stringify({ password: "hunter2", n: 1 }));
+    writeFileSync("large.json", JSON.stringify({ apiKey: "hunter2", items: Array.from({ length: 400 }, (_, i) => `item-${i}`) }));
+    break;
+  case "fs-failed":
+    mkdirSync("data", { recursive: true });
+    for (const attempt of [() => appendFileSync("missing/dir/outbox.jsonl", OUTBOX_LINE), () => writeFileSync("data", "x"), () => writeFileSync("data/kept.txt", "x", { flag: "wx" }), () => writeFileSync("data/kept.txt", "x", { flag: "wx" })]) {
+      try {
+        attempt();
+        say({ event: "wrote" });
+      } catch (error) {
+        say({ event: "failed", code: error.code });
+      }
+    }
     break;
   case "refund":
     say({ event: "response", ...(await refund()) });

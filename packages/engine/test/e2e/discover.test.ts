@@ -12,6 +12,7 @@ test("smoke: discover the zoo", { timeout: 900_000 }, async () => {
     "benign_labels",
     "callid_guard",
     "check_before_act",
+    "fs_effect",
     "naive",
     "opkey_guard",
     "phantom_failure",
