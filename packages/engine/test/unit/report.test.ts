@@ -401,6 +401,31 @@ test("text from tools and config cannot ping anyone or inject HTML into a posted
   assert.ok(md.includes("<details><summary>Evidence</summary>"), "the report's own markup is untouched");
 });
 
+test("text from a tool cannot form a link, an image or an autolink", () => {
+  const hostile = "see [here](https://evil.test) ![x](https://evil.test/x.png) www.evil.test WWW.EVIL.TEST";
+  const phantom = verdict({ cellId: "post-effect-fast-fresh", kind: "phantom-failure", outcome: "error", error: hostile });
+  const md = renderMarkdown(report([lane("refund", [verdict(), phantom])], []));
+  const line = md.split("\n").find((l) => l.includes("evil"))!;
+  assert.ok(line, "the error text reaches the report");
+  // A backslash-escaped bracket cannot open link text or close it, so no `](` is left unescaped.
+  assert.doesNotMatch(line, /(?<!\\)\]\(/);
+  assert.match(line, /\\\[here\\\]/);
+  assert.match(line, /!\\\[x\\\]/);
+  assert.doesNotMatch(line, /https?:\/\//);
+  assert.match(line, /www\u200b\.evil\.test/);
+  assert.match(line, /WWW\u200b\.EVIL\.TEST/, "the case of the text is kept");
+});
+
+test("a backslash in tool text cannot cancel the escape of a bracket", () => {
+  const hostile = "\\[x\\](//evil.test) C:\\Users\\app \\\\[y]";
+  const hand: ToolRating = { ...lane("notify", clean).rating, stars: 3, summary: hostile, recommendation: "none" };
+  const md = renderMarkdown(report([{ tool: "notify", rating: hand, runs: 5, wallMs: 1 }], []));
+  const row = section(md, "Findings").split("\n").find((l) => l.startsWith("| `notify`"))!;
+  // Once every backslash pair is taken as an escape, no bracket is left that could open or close a link.
+  assert.doesNotMatch(row.replace(/\\[\s\S]/g, ""), /[[\]]/);
+  assert.ok(row.includes("C:\\Users\\app"), "a backslash that is not before a bracket is left alone");
+});
+
 test("a report with no tools at all renders", () => {
   const r = report([], []);
   assert.deepEqual(r.tools, []);
@@ -427,7 +452,7 @@ test("the badge of a 4-star report", () => {
   const r = report([lane("lookup", clean), lane("upload", [verdict(), verdict({ cellId: "post-effect-fast-fresh", kind: "phantom-failure", outcome: "error", error: "x" }), verdict({ cellId: "post-settle" })])], []);
   assert.equal(r.agent.stars, 4);
   const svg = renderBadge(r);
-  const label = "crashtest: 4/5 stars · eve 1.5.0 · commit abc1234 · 2026-12-02 · in lab, 10 cells";
+  const label = "crashtest: 4/5 stars · 2 of 2 tools evaluated · eve 1.5.0 · commit abc1234 · 2026-12-02 · in lab, 10 cells";
   assert.ok(svg.startsWith("<svg "));
   assert.ok(svg.trimEnd().endsWith("</svg>"));
   assert.ok(svg.includes('xmlns="http://www.w3.org/2000/svg"'));
@@ -440,6 +465,13 @@ test("the badge of a 4-star report", () => {
   assert.ok(svg.includes('height="20"'));
   assert.ok(svg.includes("Verdana") && svg.includes('font-size="11"'));
   assert.doesNotMatch(svg, BANNED);
+});
+
+test("the badge title and label name the coverage", () => {
+  const svg = renderBadge({ ...report(), agent: { stars: 5, evaluated: 5, total: 6 } });
+  assert.match(svg, /<title>crashtest: 5\/5 stars · 5 of 6 tools evaluated · eve /);
+  assert.match(svg, /aria-label="crashtest: 5\/5 stars · 5 of 6 tools evaluated/);
+  assert.ok(svg.includes(">★★★★★ eve 1.5.0<"), "the visible text does not change");
 });
 
 test("the badge segments are 12 + 7 x characters wide", () => {
@@ -466,7 +498,7 @@ test("the badge of a report that could not be evaluated", () => {
   const svg = renderBadge(report([lane("ping", [], { na: { reason: "no-effect", detail: "" } })], [], { commit: null, dirty: false }));
   assert.ok(svg.includes(">not evaluated<"));
   assert.ok(svg.includes("#9f9f9f"));
-  assert.ok(svg.includes('aria-label="crashtest: not evaluated · eve 1.5.0 · commit no commit · 2026-12-02 · in lab, 5 cells"'));
+  assert.ok(svg.includes('aria-label="crashtest: not evaluated · 0 of 1 tools evaluated · eve 1.5.0 · commit no commit · 2026-12-02 · in lab, 5 cells"'));
   assert.ok(svg.includes(`<rect x="75" width="${12 + 7 * "not evaluated".length}" height="20" fill="#9f9f9f"/>`));
   assert.doesNotMatch(svg, BANNED);
 });

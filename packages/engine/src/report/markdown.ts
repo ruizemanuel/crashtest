@@ -25,11 +25,20 @@ function cell(text: string): string {
 }
 
 /**
- * Text that came from a tool, a provider or the config, made harmless in a comment: `<` cannot start HTML and an
- * `@` (followed by a zero-width space) cannot mention anyone.
+ * Text that came from a tool, a provider or the config, made harmless in a comment: `<` cannot start HTML, an `@`
+ * (followed by a zero-width space) cannot mention anyone, a bracket is escaped so the text cannot form a link or an
+ * image, and a zero-width space inside `://` and `www.` keeps GitHub from turning the text into an autolink.
  */
 function plain(text: string): string {
-  return text.replace(/</g, "&lt;").replace(/@/g, "@\u200b");
+  return (
+    text
+      .replace(/</g, "&lt;")
+      .replace(/@/g, "@\u200b")
+      // A backslash already in the text would cancel the escape of the bracket after it, so those are doubled first.
+      .replace(/(\\*)([[\]])/g, "$1$1\\$2")
+      .replace(/:\/\//g, ":\u200b//")
+      .replace(/www\./gi, (match) => `${match.slice(0, 3)}\u200b.`)
+  );
 }
 
 /** A tool name as an inline code span that a backtick in the name cannot break; in a table, `|` is escaped too. */

@@ -17,10 +17,11 @@ function escapeXml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** The full description of the badge, for screen readers and the hover title. */
+/** The full description of the badge, for screen readers and the hover title: the rating and how many tools it covers. */
 function description(r: Report): string {
-  const rating = r.agent.stars === null ? "not evaluated" : `${r.agent.stars}/5 stars`;
-  return `crashtest: ${rating} · eve ${r.eve.version} · commit ${commitLabel(r.target)} · ${reportDate(r)} · in lab, ${r.lab.cells} cells`;
+  const { stars, evaluated, total } = r.agent;
+  const rating = stars === null ? "not evaluated" : `${stars}/5 stars`;
+  return `crashtest: ${rating} · ${evaluated} of ${total} tools evaluated · eve ${r.eve.version} · commit ${commitLabel(r.target)} · ${reportDate(r)} · in lab, ${r.lab.cells} cells`;
 }
 
 /** Centered text with a soft shadow, so it stays readable on the light segment colors. */
