@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hostInCatalog, hostSupportsIdempotency, hostSupportsLookup } from "../../src/preload/catalog.ts";
 import { createFakeProvider, type FakeRequest, type FakeResult, type Fixture } from "../../src/preload/fake-provider.ts";
+import { isKnownRead } from "../../src/preload/known-reads.ts";
 import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "../../src/preload/normalize.ts";
 
 const FORM = { "content-type": "application/x-www-form-urlencoded" };
@@ -256,6 +257,38 @@ test("a GraphQL document with a mutation or subscription anywhere at its top lev
     'query { a(text: "mutation) }',
   ];
   for (const text of effects) assert.equal(p.handle(post(url, { query: text })).effect.mutating, true, text);
+});
+
+test("a known read needs its own host, path and method", () => {
+  const p = createFakeProvider(null);
+  // The GraphQL rule holds on any host, also on one that has other known reads.
+  const query = p.handle(post("https://api.vercel.com/graphql", { query: "{ viewer { id } }" }));
+  assert.equal(query.effect.mutating, false);
+  assert.deepEqual(query.body, { data: {} });
+  assert.equal(p.handle(post("https://api.vercel.com/graphql", { query: "mutation { a }" })).effect.mutating, true);
+  // A token path on another host is an effect.
+  for (const url of [
+    "https://api.acme.test/v1/connect/token/slack%2Fsre",
+    "https://vercel.com/v1/connect/token/slack%2Fsre",
+    "https://api.github.com/v1/connect/token/slack%2Fsre",
+    "https://github.acme.test/app/installations/42/access_tokens",
+    "https://api.vercel.com/app/installations/42/access_tokens",
+  ]) {
+    assert.equal(p.handle(post(url, {})).effect.mutating, true, url);
+  }
+  // GitHub answers a new installation token with 201 Created.
+  const token = p.handle(post("https://api.github.com/app/installations/42/access_tokens"));
+  assert.equal(token.status, 201);
+  assert.equal(token.effect.mutating, false);
+  // A GET to an entry that is POST only is not that read: it gets the generic answer, not the token.
+  for (const url of ["https://api.vercel.com/v1/connect/token/slack%2Fsre", "https://api.github.com/app/installations/42/access_tokens"]) {
+    const { hostname, pathname } = new URL(url);
+    assert.equal(isKnownRead("GET", hostname, pathname, undefined), false, url);
+    const r = p.handle(get(url));
+    assert.equal(r.status, 200, url);
+    assert.equal((r.body as { token?: string }).token, undefined, url);
+  }
+  assert.equal(isKnownRead("GET", "api.linear.test", "/graphql", { query: "{ viewer { id } }" }), false);
 });
 
 test("a fixture on a known read is answered without a state change", () => {
