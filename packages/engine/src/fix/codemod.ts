@@ -157,7 +157,7 @@ function applyCodemod(root: string, tool: ToolInfo, edit: (source: Source) => (E
   const after = bom + edited;
   const checked = [{ path, text: after }];
   if (createHelper) checked.push({ path: HELPER_FILE, text: readFileSync(templatePath("idempotency.ts"), "utf8") });
-  const first = newTypeErrors(root, checked)?.[0];
+  const first = typeCheckStep(path, () => newTypeErrors(root, checked))?.[0];
   if (first !== undefined) notApplied(`the edited ${path} would not type-check: ${first}`);
 
   writeFileSync(file, after);
@@ -168,6 +168,16 @@ function applyCodemod(root: string, tool: ToolInfo, edit: (source: Source) => (E
     files.push({ path: HELPER_FILE, before: null, after: readFileSync(helper, "utf8") });
   }
   return { applied: true, files };
+}
+
+/** Runs a step of the type check of `path`. One that cannot run refuses the patch: it neither passes nor fails the fix. */
+function typeCheckStep<T>(path: string, step: () => T): T {
+  try {
+    return step();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    notApplied(`the type check of ${path} could not run: ${message.trim().replace(/\s*\n\s*/g, " ")}`);
+  }
 }
 
 function contains(root: string, path: string): boolean {
@@ -678,7 +688,7 @@ function helperExtension(source: Source, declarations: readonly ImportDeclaratio
   if (specifiers.some((s) => s.endsWith(".ts"))) return ".ts";
   if (specifiers.some((s) => s.endsWith(".js"))) return ".js";
   if (specifiers.length > 0) return "";
-  const settings = readModuleSettings(source.root);
+  const settings = typeCheckStep(source.path, () => readModuleSettings(source.root));
   return settings?.nodeEsm ? (settings.tsExtensions ? ".ts" : ".js") : "";
 }
 

@@ -689,6 +689,32 @@ test("a guard that would not type-check is refused with the compiler's message",
   assert.equal(appliedText(app, applyLedgerGuard(app, tool("notify"), IDENTITY), "agent/tools/notify.ts", NOTIFY), NOTIFY_GUARDED);
 });
 
+test("a tsconfig.json the type check cannot read refuses the patch, and nothing is written", (t) => {
+  // A lab copy sits two directories below the app, so a relative `extends` that works in the app can miss there.
+  const tsconfigs = {
+    malformed: `{"compilerOptions":{"strict":true,"noEmit":true},"include":["agent/**/*.ts"`,
+    "a missing base": `{"extends":"../../tsconfig.base.json","include":["agent/**/*.ts"]}`,
+  };
+  // NOTIFY has no relative import, so its helper import reads the tsconfig; RESEND_REL has one, so only the gate does.
+  const RESEND_REL = RESEND.replace(`import { z } from "zod";\n`, `import { z } from "zod";\nimport { x } from "./x.js";\n`);
+
+  for (const [name, tsconfig] of Object.entries(tsconfigs)) {
+    const app = tempApp(t, { "tsconfig.json": tsconfig, "agent/tools/notify.ts": NOTIFY, "agent/tools/email.ts": RESEND_REL, "agent/tools/x.ts": "export const x = 1;\n" });
+
+    for (const [result, rel] of [
+      [applyLedgerGuard(app, tool("notify"), IDENTITY), "agent/tools/notify.ts"],
+      [applyUpstreamKey(app, tool("email"), IDENTITY), "agent/tools/email.ts"],
+    ] as const) {
+      assert.equal(result.applied, false, name);
+      assert.ok(result.reason?.startsWith(`the type check of ${rel} could not run: tsconfig.json: `), `${name}: ${result.reason}`);
+      assert.deepEqual(result.files, [], name);
+    }
+    assert.equal(read(app, "agent/tools/notify.ts"), NOTIFY, name);
+    assert.equal(read(app, "agent/tools/email.ts"), RESEND_REL, name);
+    assert.equal(existsSync(join(app, ...HELPER.split("/"))), false, name);
+  }
+});
+
 test("an app without tsconfig.json is patched as before", (t) => {
   const app = tempApp(t, { "agent/tools/x.ts": TYPED_INPUT, "agent/tools/notify.ts": NOTIFY });
 

@@ -171,9 +171,12 @@ its lane again, this time on a patched lab copy of the app. The app's files chan
    declare it; only a type literal such as `{ to: string; orderId: string }` shows that it does. When the app has
    a `tsconfig.json`, a patch that would add type errors to the project is not applied; the reason names the first
    one. Errors about a module or a type package that cannot be found do not count: what is installed is not the
-   patch's doing. The helper import gets the extension of the tool's other relative imports (`.ts` or `.js`);
-   a tool without any gets `.js` when the tsconfig sets `module` or `moduleResolution` to `node16` or `nodenext`
-   (`.ts` with `allowImportingTsExtensions`), and no extension otherwise.
+   patch's doing. When the type check cannot run, for example because the `tsconfig.json` has a syntax error or
+   its `extends` does not resolve from the lab copy (which sits two directories below the app), the patch is not
+   applied either, and the reason says why. The helper import gets the extension of the tool's other relative
+   imports (`.ts` or `.js`); a tool without any gets `.js` when the tsconfig sets `module` to `node16`, `node18`,
+   `node20` or `nodenext`, or `moduleResolution` to `node16` or `nodenext` (`.ts` with
+   `allowImportingTsExtensions`), and no extension otherwise.
 3. **Choice.** A candidate improves the tool when its rating has more stars than before and no crash cell got a
    worse verdict, from best to worst: `clean`; `phantom-failure` and `lost-effect`; `dup`; `invalid`. Of the
    improving candidates the one with the most stars is chosen, and on a tie the earlier strategy (`upstream-key`

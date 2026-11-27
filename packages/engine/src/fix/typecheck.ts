@@ -10,27 +10,43 @@ import { Project, ts } from "ts-morph";
  */
 const IGNORED_CODES = new Set([2307, 2580, 2591, 7016]);
 
+/**
+ * "No inputs were found in config file": the options are all there, and the edited files are checked whatever
+ * the tsconfig includes, so an `include` that matches nothing in the lab (say, `agent/**` in an app whose agents
+ * moved to `agents/`) does not keep the check from running.
+ */
+const NO_INPUTS = 18003;
+const NODE_MODULES = new Set([ts.ModuleKind.Node16, ts.ModuleKind.Node18, ts.ModuleKind.Node20, ts.ModuleKind.NodeNext]);
+const NODE_RESOLUTIONS = new Set([ts.ModuleResolutionKind.Node16, ts.ModuleResolutionKind.NodeNext]);
+
+/**
+ * The parsed `<root>/tsconfig.json`, or null when there is none. Throws, with the first error, when the compiler
+ * cannot read or parse it (a syntax error, an `extends` that does not resolve): a check on guessed settings proves nothing.
+ */
 function readTsconfig(root: string): ts.ParsedCommandLine | null {
-  const file = join(root, "tsconfig.json");
+  // With `\` in the name, the compiler fails an assertion of its own when it reports an error in the file.
+  const base = root.split(sep).join("/");
+  const file = `${base}/tsconfig.json`;
   if (!existsSync(file)) return null;
-  const { config } = ts.readConfigFile(file, (path) => ts.sys.readFile(path));
-  return ts.parseJsonConfigFileContent(config ?? {}, ts.sys, root, undefined, file);
+  const { config, error } = ts.readConfigFile(file, (path) => ts.sys.readFile(path));
+  const parsed = error ? null : ts.parseJsonConfigFileContent(config ?? {}, ts.sys, base, undefined, file);
+  const first = error ?? parsed?.errors.find((d) => d.category === ts.DiagnosticCategory.Error && d.code !== NO_INPUTS);
+  if (first) throw new Error(`tsconfig.json: ${flatten(first.messageText)}`);
+  return parsed;
 }
 
 /**
- * Whether the app resolves imports the way Node does (`module` or `moduleResolution` is `node16` or `nodenext`),
- * where a relative import needs its file extension, and whether it may write `.ts` for it. Null without a tsconfig.json.
+ * Whether the app resolves imports the way Node does (`module` is `node16`, `node18`, `node20` or `nodenext`, or
+ * `moduleResolution` is `node16` or `nodenext`), where a relative import needs its file extension, and whether it
+ * may write `.ts` for it. Null without a tsconfig.json; throws like `newTypeErrors` when it cannot be read.
  */
 export function readModuleSettings(root: string): { nodeEsm: boolean; tsExtensions: boolean } | null {
   const options = readTsconfig(resolve(root))?.options;
   if (!options) return null;
-  const { module, moduleResolution } = options;
   return {
     nodeEsm:
-      module === ts.ModuleKind.Node16 ||
-      module === ts.ModuleKind.NodeNext ||
-      moduleResolution === ts.ModuleResolutionKind.Node16 ||
-      moduleResolution === ts.ModuleResolutionKind.NodeNext,
+      (options.module !== undefined && NODE_MODULES.has(options.module)) ||
+      (options.moduleResolution !== undefined && NODE_RESOLUTIONS.has(options.moduleResolution)),
     tsExtensions: options.allowImportingTsExtensions === true,
   };
 }
@@ -46,7 +62,8 @@ interface Found {
 /**
  * The type errors that `edits` add to the project of `<root>/tsconfig.json`: one `"<path>: <message>"` line for
  * each diagnostic of the whole project with the edits that it did not have without them. An edit's `path` is posix
- * and relative to `root`; an edit to a missing file creates it. Null when the app has no tsconfig.json.
+ * and relative to `root`; an edit to a missing file creates it. Null when the app has no tsconfig.json; throws when
+ * the tsconfig.json cannot be read or parsed.
  */
 export function newTypeErrors(root: string, edits: { path: string; text: string }[]): string[] | null {
   const dir = resolve(root);
@@ -88,9 +105,14 @@ function errors(root: string, project: Project): Found[] {
     .map((diagnostic) => {
       // A diagnostic without a file is about the compiler options.
       const path = diagnostic.file ? appPath(root, diagnostic.file.fileName) : "tsconfig.json";
-      const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n").replace(/\s*\n\s*/g, " ");
+      const message = flatten(diagnostic.messageText);
       return { path, start: diagnostic.start ?? 0, key: `${path}|${diagnostic.code}|${message}`, line: `${path}: ${message}` };
     });
+}
+
+/** A diagnostic's message and the messages chained to it, on one line. */
+function flatten(message: string | ts.DiagnosticMessageChain): string {
+  return ts.flattenDiagnosticMessageText(message, "\n").replace(/\s*\n\s*/g, " ");
 }
 
 /** The posix path of `file` relative to `root`. The compiler's file names use `/` on Windows too; `relative` reads both. */

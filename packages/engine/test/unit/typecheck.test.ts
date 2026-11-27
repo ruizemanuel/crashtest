@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { newTypeErrors } from "../../src/fix/typecheck.ts";
+import { newTypeErrors, readModuleSettings } from "../../src/fix/typecheck.ts";
 
 const TSCONFIG = `{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext","moduleResolution":"bundler"},"include":["agent/**/*.ts"]}`;
 const TOOL = "interface Input { text: string }\nexport const f = (input: Input) => input.text;\n";
@@ -88,4 +88,37 @@ test("an app without tsconfig.json is not checked", (t) => {
   const edits = [{ path: "agent/tools/t.ts", text: TOOL.replace("input.text", "input.orderId") }];
 
   assert.equal(newTypeErrors(rootWithoutTsconfig, edits), null);
+});
+
+test("a tsconfig.json the compiler cannot read throws its first error instead of being checked", (t) => {
+  const edits = [{ path: "agent/tools/t.ts", text: TOOL }];
+  const malformed = tempApp(t, { "agent/tools/t.ts": TOOL }, `{"compilerOptions":{"strict":true},"include":["agent/**/*.ts"`);
+  const missingBase = tempApp(t, { "agent/tools/t.ts": TOOL }, `{"extends":"../../tsconfig.base.json","include":["agent/**/*.ts"]}`);
+
+  for (const root of [malformed, missingBase]) {
+    assert.throws(() => newTypeErrors(root, edits), /^Error: tsconfig\.json: /);
+    assert.throws(() => readModuleSettings(root), /^Error: tsconfig\.json: /);
+  }
+  assert.throws(() => readModuleSettings(missingBase), /tsconfig\.base\.json/);
+});
+
+test("a tsconfig.json that includes none of the app's files still checks the edited ones", (t) => {
+  const root = tempApp(t, { "agent/tools/t.ts": TOOL }, `{"compilerOptions":{"strict":true,"noEmit":true},"include":["agents/**/*.ts"]}`);
+
+  const errors = newTypeErrors(root, [{ path: "agent/tools/t.ts", text: TOOL.replace("input.text", "input.orderId") }]);
+
+  assert.equal(errors?.length, 1);
+  assert.match(errors![0]!, /^agent\/tools\/t\.ts: .*orderId/);
+});
+
+test("Node's module settings need the extension, however they are spelled", (t) => {
+  const settings = (compilerOptions: string): ReturnType<typeof readModuleSettings> =>
+    readModuleSettings(tempApp(t, {}, `{"compilerOptions":${compilerOptions},"include":["agent/**/*.ts"]}`));
+
+  assert.deepEqual(settings(`{"module":"node20"}`), { nodeEsm: true, tsExtensions: false });
+  assert.deepEqual(settings(`{"module":"Node18"}`), { nodeEsm: true, tsExtensions: false });
+  assert.deepEqual(settings(`{"module":"node16"}`), { nodeEsm: true, tsExtensions: false });
+  assert.deepEqual(settings(`{"moduleResolution":"NodeNext"}`), { nodeEsm: true, tsExtensions: false });
+  assert.deepEqual(settings(`{"module":"NodeNext","allowImportingTsExtensions":true}`), { nodeEsm: true, tsExtensions: true });
+  assert.deepEqual(settings(`{"module":"esnext","moduleResolution":"bundler"}`), { nodeEsm: false, tsExtensions: false });
 });
