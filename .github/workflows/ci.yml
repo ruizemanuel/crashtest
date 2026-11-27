@@ -11,6 +11,7 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +45,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter eve-crashtest test:e2e
       - name: Upload crash-test run logs
-        if: failure()
+        # A job cancelled by its timeout is not a failure, and its runs are the ones worth reading.
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
           name: crashtest-runs
