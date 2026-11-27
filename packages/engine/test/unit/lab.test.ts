@@ -317,6 +317,40 @@ test("labEnv drops credential-looking names and provider prefixes, keeps ordinar
   assert.deepEqual(env, { HOME: "/h", NODE_OPTIONS: "--import=x" });
 });
 
+test("labEnv drops values that carry URL credentials or name a database or queue server, whatever the variable is called", () => {
+  const dropped = {
+    DATABASE_URL: "postgres://app:hunter2@db.internal:5432/shop",
+    POSTGRES_URL: "postgresql://db.internal/shop",
+    PRISMA_URL: "prisma+postgres://accelerate.example/?api=1",
+    MYSQL_URL: "mysql://root@localhost/shop",
+    MARIADB: "mariadb://db/shop",
+    MONGO: "mongodb+srv://cluster0.example.net/shop",
+    MONGO_LOCAL: "mongodb://localhost:27017",
+    KV_URL: "rediss://default:pw@kv.example:6379",
+    REDIS_URL: "redis://localhost:6379",
+    BROKER: "amqps://mq.example/vhost",
+    RABBIT: "amqp://localhost",
+    MAIL_SERVER: "smtp://mail.example:587",
+    JDBC: "jdbc:sqlserver://db.example:1433;databaseName=shop",
+    PROXY: "http://user:pass@proxy.example:8080",
+    UPSTREAM: "https://:tok3n@api.example.com/v1",
+  };
+  const kept = {
+    HOME: "/h",
+    SITE_URL: "https://shop.example.com/orders",
+    NPM_REPO: "git+https://github.com/acme/shop.git",
+    MAILTO: "mailto:ops@example.com",
+    NOTE: "redis is used in production",
+    EMAIL: "ops@example.com",
+  };
+  assert.deepEqual(labEnv({ ...dropped, ...kept }, {}), kept);
+});
+
+test("labEnv keeps a connection string that the config env sets explicitly", () => {
+  const env = labEnv({ DATABASE_URL: "postgres://app:hunter2@db.internal/shop" }, { DATABASE_URL: "postgres://localhost:5432/scratch" });
+  assert.deepEqual(env, { DATABASE_URL: "postgres://localhost:5432/scratch" });
+});
+
 test("preloadedLabEnv scrubs credentials and stale CT_* variables, disables telemetry and appends the preload", () => {
   const flag = preloadImportFlag(preloadPath());
   const env = preloadedLabEnv(

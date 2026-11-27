@@ -26,7 +26,12 @@ From a checkout of this repository, run `pnpm install` and then `node packages/e
 (Node runs the TypeScript sources directly).
 
 Nothing calls a real model: the lab replaces the agent's model with a scripted mock, so a run costs no tokens.
-No request leaves the lab: every non-loopback HTTP request is answered by the fake provider.
+No HTTP request leaves the lab: every non-loopback HTTP/1.1 request (`fetch`, `node:http`, `node:https`) is answered
+by the fake provider. **Connections that are not HTTP/1.1 are neither faked nor blocked: they reach their real
+servers.** That covers database drivers (Postgres, MySQL, MongoDB), Redis, SMTP, HTTP/2, gRPC and raw sockets. The
+lab's environment drops credentials and the URLs of databases, caches, queues and mail servers (see
+[How a run works](#how-a-run-works)), so such a tool usually finds no server to connect to; an address that the
+configuration's `env` sets is used for real.
 
 ## Quick start
 
@@ -242,8 +247,12 @@ can be committed.
    non-loopback HTTP request as a fake provider, writes each request, and each file write the app makes inside the
    lab, to the run's ledger and kills the process at the cell's crash point. Environment variables that look like
    credentials (names containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or `COOKIE`, and names
-   starting with `VERCEL_`, `AI_GATEWAY_`, `ANTHROPIC_` or `OPENAI_`) are removed from the lab's environment, and
-   eve's telemetry is turned off.
+   starting with `VERCEL_`, `AI_GATEWAY_`, `ANTHROPIC_` or `OPENAI_`) are removed from the lab's environment. So is
+   every variable, whatever its name, whose value carries URL credentials (`scheme://user:pass@host`) or the URL of
+   a database, cache, queue or mail server (`postgres://`, `postgresql://`, `mysql://`, `mariadb://`, `mssql://`,
+   `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://`, `amqp://`, `amqps://`, `nats://`, `kafka://`,
+   `smtp://` and similar), because the preload does not fake those connections. A variable that `env` in the
+   configuration sets reaches the lab as given. eve's telemetry is turned off.
 4. **Discovery.** `eve info --json` lists the tools and their input schemas. The tools under test are the files
    at the top level of `agent/tools/` (without `*.spec.*` and `*.test.*`); eve's built-in tools are not tested. An
    authored tool that eve does not list is reported as not evaluated.
@@ -329,7 +338,7 @@ silently weaken the test.
 | --- | --- | --- |
 | `scenarios` | `{ "<tool>": { "input"?: object, "freeText"?: string[] } }` | `input` replaces the generated input in every cell. `freeText` names the input fields a model may word differently on a replay; the fresh-id and retry cells reword them, and they are never identity fields. By default, string fields named like `text`, `message`, `body`, `note` or `summary` are free text. |
 | `identity` | `{ "<tool>": string[] }` | The input fields that identify one business operation (a recipient, an order id). The recommendations name them as the fields to build an idempotency key from. By default: the required scalar fields that are not free text. |
-| `env` | `{ "<NAME>": string }` | Environment variables for the lab's eve processes. They are applied after the credential-looking variables are removed, so they always reach the app. Requests never leave the lab, so placeholder values are enough. |
+| `env` | `{ "<NAME>": string }` | Environment variables for the lab's eve processes. They are applied after the credential-looking variables and the connection URLs are removed, so they always reach the app as given, even a value that the scrub would drop. HTTP requests never leave the lab, so placeholder values are enough; but a database URL, or any other address of a server that is not HTTP, set here is connected to for real. |
 | `fixtures` | `{ "method"?: string, "url": string, "status"?: integer, "body"?: any }[]` | Canned answers of the fake provider, for tools that need a specific response. `url` is matched against the full request URL, where `*` matches any run of characters (including `/`); `method` narrows the match; `status` defaults to 200 and `body` to `{}`. The first matching fixture answers. A mutating request answered by a fixture counts as a state change. |
 | `effects.ignore` | `string[]` | Request URLs, or lab-relative file paths such as `data/cache/*`, that are not effects of the tool, with the same `*` rule, matched against the full URL as the ledger records it (secrets in the query or path redacted) or the path. An ignored request or write stays in the ledger, but it is not counted and never triggers a cell's crash point: the crash comes after the next effect that is not ignored. |
 | `waivers` | `{ "<tool>": string }` | The tool is still tested and rated, and the report shows the reason, but the agent rating leaves it out. |
@@ -340,8 +349,9 @@ silently weaken the test.
 - crashtest observes HTTP/1.1 requests made through `fetch`, `node:http` and `node:https`, and the file writes the
   app makes inside the lab with `node:fs`: `writeFileSync`, `appendFileSync`, `writeFile`, `appendFile` and the
   `fs.promises` forms of `writeFile` and `appendFile`. Files under `.eve`, `node_modules` or a `.crashtest*`
-  directory at the top of the lab are not effects. It does not observe raw TCP (Postgres, Redis, SMTP), HTTP/2,
-  gRPC, effects inside eve sandboxes, writes outside the lab, writes from child processes that are not Node (a Node
+  directory at the top of the lab are not effects. It neither observes nor blocks raw TCP (Postgres, Redis, SMTP),
+  HTTP/2 or gRPC: those connections reach their real servers when the app has an address for them. It does not
+  observe effects inside eve sandboxes, writes outside the lab, writes from child processes that are not Node (a Node
   child process inherits the preload and is observed), or file changes made through other APIs: a file descriptor
   (`fs.write`), a stream (`createWriteStream`), an `fs.promises` file handle, `rename`, `copyFile`, `rm` and so on.
   A tool whose only effect is one of these shows as not evaluated (no external effect in the baseline).

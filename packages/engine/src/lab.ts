@@ -84,16 +84,56 @@ function strictlyInside(parent: string, child: string): boolean {
 
 const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE/i;
 const SECRET_PREFIX = /^(VERCEL_|AI_GATEWAY_|ANTHROPIC_|OPENAI_)/i;
+/** A URL with a password in it: `scheme://user:pass@` (the user may be empty). */
+const URL_CREDENTIALS = /[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*:[^\s/?#@]*@/i;
+/** Every `scheme://` in a value. */
+const URL_SCHEME = /([a-z][a-z0-9+.-]*):\/\//gi;
+/**
+ * Schemes of servers that the preload neither fakes nor blocks (it answers HTTP only): databases, caches, queues and
+ * mail. Matched against each `+`-separated part of a scheme, so `mongodb+srv` and `prisma+postgres` count.
+ */
+const SERVER_SCHEMES = new Set([
+  "postgres",
+  "postgresql",
+  "cockroachdb",
+  "mysql",
+  "mariadb",
+  "mssql",
+  "sqlserver",
+  "mongodb",
+  "clickhouse",
+  "libsql",
+  "redis",
+  "rediss",
+  "valkey",
+  "memcached",
+  "amqp",
+  "amqps",
+  "nats",
+  "kafka",
+  "smtp",
+  "smtps",
+]);
+
+/** True for a value with URL credentials or the URL of a database, cache, queue or mail server. */
+function carriesConnection(value: string): boolean {
+  if (URL_CREDENTIALS.test(value)) return true;
+  for (const [, scheme] of value.matchAll(URL_SCHEME)) {
+    if ((scheme ?? "").toLowerCase().split("+").some((part) => SERVER_SCHEMES.has(part))) return true;
+  }
+  return false;
+}
 
 /**
- * The environment for processes that run the lab: `base` without credential-looking variables, then
- * `extra` on top. Variables in `extra` (the config `env` and `CT_*`) are explicit and always win.
+ * The environment for processes that run the lab: `base` without credential-looking variables and without values
+ * that carry URL credentials or point at a server that is not HTTP (a database URL in a variable named anything),
+ * then `extra` on top. Variables in `extra` (the config `env` and `CT_*`) are explicit and always win.
  */
 export function labEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(base)) {
     if (value === undefined) continue;
-    if (SECRET_NAME.test(name) || SECRET_PREFIX.test(name)) continue;
+    if (SECRET_NAME.test(name) || SECRET_PREFIX.test(name) || carriesConnection(value)) continue;
     env[name] = value;
   }
   return { ...env, ...extra };
