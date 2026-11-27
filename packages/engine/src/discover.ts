@@ -26,7 +26,7 @@ const INFO_TIMEOUT_MS = 120_000;
 const TOOL_FILE = /\.(ts|mts|js|mjs)$/;
 const NOT_A_TOOL = /\.(spec|test)\./;
 const DISABLE_TOOL = /\bdisableTool\s*\(/;
-const REPLAY_NEVER =/\breplay\?:\s*["']never["']/;
+const REPLAY_NEVER = /\breplay\?:\s*["']never["']/;
 const TAIL_CHARS = 2000;
 /** Run directory of the discovery under `<outDir>/runs/`; the leading underscore keeps it apart from tool names. */
 const DISCOVER_RUN = "_discover";
