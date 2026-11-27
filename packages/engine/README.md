@@ -296,10 +296,10 @@ can be committed.
    value, a validation, a schema or what a value must be, it points at `scenarios.<tool>.input`. Anything else,
    including every failure crashtest reports itself (a server that did not start, a turn that did not complete),
    points at the run directory and the keys that can help: `scenarios.<tool>.input`, `auth`, `env` and `fixtures`.
-   A tool that refuses by returning a value instead of throwing, such as `{ success: false, error }`, and changes
-   nothing in either baseline is not evaluated either: the reason quotes the refusal and gets its hint by the same
-   rules. When the AI SDK rejects the call's input before the tool runs, eve's stream shows no call at all; the reason
-   then quotes the rejection the model got and always points at `scenarios.<tool>.input`.
+   A tool that refuses by returning a value instead of throwing, such as `{ success: false, error }`, in either
+   baseline is not evaluated either, whatever it changed before the refusal: the reason quotes the refusal and gets
+   its hint by the same rules. When the AI SDK rejects the call's input before the tool runs, eve's stream shows no
+   call at all; the reason then quotes the rejection the model got and always points at `scenarios.<tool>.input`.
 
 ## Cells
 
@@ -330,8 +330,15 @@ a benign repeat and does not lower the rating. For other hosts every POST counts
 with the same body is benign. A PUT or DELETE that writes again an object the fake provider names (the same method,
 host and path, without the query) is benign too when its body differs from the earlier write only in fields that the
 two baselines show as varying on that endpoint, such as an `updatedAt` timestamp: the lab assumes the service
-overwrites the object. A 5-star summary that rests on such a repeat names those fields. A fixture's answer names no
+overwrites the object. A 5-star summary that rests on such a repeat names those fields. The ledger redacts secret
+fields (a token, a password), so a repeat whose only difference is in one of them looks like the earlier write: it
+is benign too, and the summary says that the write differed only in a redacted field. A fixture's answer names no
 object, so a write that a fixture answers keeps counting as a state change.
+
+The fresh-id and retry cells reword the input's free-text fields. A repeated overwrite whose body carries such a
+field (a `description`, a `note`) therefore differs from the earlier write in a field the baselines agree on: it
+still counts as a second state change, and the tool can get 3 stars, although the real service holds one object
+with the reworded text.
 
 Vercel Blob (`vercel.com/api/blob`, with the requests that `@vercel/blob` sends) is modeled per object. A target is a
 pathname or a full blob URL, which stands for its decoded path:
@@ -428,7 +435,7 @@ silently weaken the test.
 | `effects.ignore` | `string[]` | Request URLs, or lab-relative file paths such as `data/cache/*`, that are not effects of the tool, with the same `*` rule, matched against the full URL as the ledger records it (secrets in the query or path redacted) or the path. An ignored request or write stays in the ledger, but it is not counted and never triggers a cell's crash point: the crash comes after the next effect that is not ignored. |
 | `waivers` | `{ "<tool>": string }` | The tool is still tested and rated, and the report shows the reason, but the agent rating leaves it out. |
 | `tools.exclude` | `string[]` | Tools that are not run. `plan` lists them as skipped; the report leaves them out entirely (they do not count in "N of M tools evaluated"). |
-| `auth`, `scenarios.<tool>.auth` | `{ "authenticator": string, "principalId": string, "principalType": string, "attributes"?: { "<name>": string \| string[] }, "issuer"?: string, "subject"?: string }` | The caller identity the lab session gets, as a tool reads it from `ctx.session.auth.current`, for tools that check who is calling (a Slack team, a GitHub installation). Copy the shape of the identity that the tool's channel produces: the example has the shape of the identity eve's Slack channel gives a message from a person (`issuer` `slack:<team>`, `principalId` `slack:<team>:<user>`, the user in `attributes.user_id`). A tool that returns its refusal instead of throwing it shows up as not evaluated, with no external effect. `scenarios.<tool>.auth` applies to that tool and wins over the top-level `auth`. The first three fields must be non-empty; `attributes` defaults to `{}`. Without either key, the session gets eve's local development caller. Whatever the identity, the lab channel accepts only local callers. |
+| `auth`, `scenarios.<tool>.auth` | `{ "authenticator": string, "principalId": string, "principalType": string, "attributes"?: { "<name>": string \| string[] }, "issuer"?: string, "subject"?: string }` | The caller identity the lab session gets, as a tool reads it from `ctx.session.auth.current`, for tools that check who is calling (a Slack team, a GitHub installation). Copy the shape of the identity that the tool's channel produces: the example has the shape of the identity eve's Slack channel gives a message from a person (`issuer` `slack:<team>`, `principalId` `slack:<team>:<user>`, the user in `attributes.user_id`). A tool that returns its refusal instead of throwing it shows up as not evaluated: the baseline failed, and the reason quotes the refusal. `scenarios.<tool>.auth` applies to that tool and wins over the top-level `auth`. The first three fields must be non-empty; `attributes` defaults to `{}`. Without either key, the session gets eve's local development caller. Whatever the identity, the lab channel accepts only local callers. |
 
 ## Limits
 
@@ -455,12 +462,17 @@ silently weaken the test.
   crash; how often a real model actually retries is not measured.
 - Only authored tools in `agent/tools/` are tested: tools from MCP or OpenAPI connections, from extensions, or
   added at runtime are not.
+- Only an agent in `agent/agent.ts` is wrapped. An agent in `agent/agent.js`, `agent/agent.mjs` or another of eve's
+  module extensions stays in the lab next to the lab's `agent/agent.ts`, and eve reports two module sources for the
+  agent.
 - Every approval is approved.
 - Hosts outside the fake provider's catalog get a generic success answer; a tool that needs a specific response
   needs a fixture.
 - The fake Vercel Blob store does not serve the content of an object: a read from `*.blob.vercel-storage.com` gets
   the generic answers. Multipart uploads (`/api/blob/mpu`) are generic POSTs, each one a state change. A delete takes
   an object the lab never saw as one that exists, so deleting it is a state change, while head and list take it as
-  absent: the lab cannot know what the real store holds.
+  absent: the lab cannot know what the real store holds. The fake store ignores `ifMatch` (the `x-if-match` header),
+  so a conditional put or delete is applied unconditionally: a replay whose condition the real store would fail is
+  not refused in the lab, and such a tool can rate higher than its real behavior warrants.
 - A report covers one eve version (the one installed in the app) and one platform and Node version, both recorded
   in `report.json`.

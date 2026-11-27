@@ -181,9 +181,9 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
       const outcome = knownRead ? answerKnownRead(request, store) : (handleCatalog(request, store) ?? generic(request));
       return respond(outcome.status, outcome.body, settledBy(effect, outcome));
     };
-    // A key counts only where the real service honors it. Slack and GitHub ignore the header, so a repeat there is a
-    // real second effect; a host outside the catalog is assumed to honor it (detection names those hosts). A known
-    // read is not mutating, so it carries no key and is answered right here.
+    // A key counts only where the real service honors it. Slack, GitHub and Vercel Blob ignore the header, so a repeat
+    // there is a real second effect; a host outside the catalog is assumed to honor it (detection names those hosts).
+    // A known read is not mutating, so it carries no key and is answered right here.
     if (idempotencyKey === undefined || !honorsIdempotencyKey(url.hostname)) return answer();
 
     const slot = `${url.host} ${idempotencyKey}`;

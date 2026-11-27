@@ -1,6 +1,7 @@
 // The overlay turns a lab copy into something crashtest can drive: the agent's model becomes a scripted
-// mock and a crash hook is added. The user's own files are renamed to `*.ctorig.spec.ts` (eve ignores
-// `*.spec.*` when it discovers files, but they can still be imported) and generated shims take their place.
+// mock and a crash hook is added. The user's own files are renamed to `*.ctorig.spec<ext>`, keeping their
+// extension (eve ignores `*.spec.*` when it discovers files, but they can still be imported), and generated shims
+// take their place.
 // Tool files are never touched: a crash comes from the preload and the hook, not from wrapping a tool.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
