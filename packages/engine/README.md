@@ -170,7 +170,9 @@ its lane again, this time on a patched lab copy of the app. The app's files chan
    into a Promise. Neither codemod adds an identity field to a destructured input whose type annotation does not
    declare it; only a type literal such as `{ to: string; orderId: string }` shows that it does. When the app has
    a `tsconfig.json`, a patch that would add type errors to the project is not applied; the reason names the first
-   one. Errors about a module or a type package that cannot be found do not count: what is installed is not the
+   one. Only the errors the check can see count: it does not model Node's ESM and CommonJS file formats, so under the
+   Node module settings listed below a missing extension on the helper import is caught only by the extension rule.
+   Errors about a module or a type package that cannot be found do not count: what is installed is not the
    patch's doing. When the type check cannot run, for example because the `tsconfig.json` has a syntax error or
    its `extends` does not resolve from the lab copy (which sits two directories below the app), the patch is not
    applied either, and the reason says why. The helper import gets the extension of the tool's other relative
