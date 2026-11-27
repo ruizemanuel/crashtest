@@ -189,7 +189,8 @@ test("a chosen ledger-guard prints the lab result, the trade-off and the store n
     text,
     "In lab: naive ★☆☆☆☆ → ★★★★★ with ledger-guard (14 runs, eve 1.5.0). Patch: .crashtest/fix/naive.patch\n" +
       "Trade-off: a second legitimate call with the same identity (to, orderId) in the same turn is blocked.\n" +
-      "In lab with the file store; set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN for a durable store in production.\n",
+      "Store: the lab used the file store, which is for local runs only and keeps its records in .crashtest-idempotency/ in the working directory of eve dev (the app root); add that directory to .gitignore.\n" +
+      "Production requires a durable store: set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN (Upstash Redis REST).\n",
   );
   assert.doesNotMatch(text, BANNED);
 });
@@ -248,7 +249,6 @@ test("a report made on uncommitted changes is not used", () => {
   assert.deepEqual(usableRatings(report("abc1234", [rating(1, {})], true), CLEAN_APP), { unusable: "it was made on uncommitted changes" });
 });
 
-test("a report is not used while the app has uncommitted changes", () => {
 test("a report that does not say whether its tree was clean is not used", () => {
   const made = report("abc1234", [rating(1, {})]);
   const { dirty: _dirty, ...withoutDirty } = made.target;
@@ -258,5 +258,6 @@ test("a report that does not say whether its tree was clean is not used", () => 
   }
 });
 
+test("a report is not used while the app has uncommitted changes", () => {
   assert.deepEqual(usableRatings(report("abc1234", [rating(1, {})]), { commit: "abc1234", dirty: true }), { unusable: "the app has uncommitted changes now" });
 });

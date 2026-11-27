@@ -173,19 +173,23 @@ For each tool, stdout gets one result:
 ```
 In lab: send_message ★☆☆☆☆ → ★★★★★ with ledger-guard (14 runs, eve 1.5.0). Patch: .crashtest/fix/send_message.patch
 Trade-off: a second legitimate call with the same identity (to, orderId) in the same turn is blocked.
-In lab with the file store; set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN for a durable store in production.
+Store: the lab used the file store, which is for local runs only and keeps its records in .crashtest-idempotency/ in the working directory of eve dev (the app root); add that directory to .gitignore.
+Production requires a durable store: set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN (Upstash Redis REST).
 ```
 
-The runs are those of the chosen candidate's lane. The two extra lines appear only for `ledger-guard`:
+The runs are those of the chosen candidate's lane. The extra lines appear only for `ledger-guard`:
 
 - **Trade-off.** The op-key does not change within a turn, so a second call of the tool with the same identity
   in the same turn gets the first call's stored result instead of running. Name identity fields that tell two
   legitimate operations apart.
-- **Store.** `defaultStore()` keeps its records in files under `.crashtest-idempotency/` in the working directory
-  of `eve dev`, which is what the lab ran with: the lab removes `UPSTASH_REDIS_REST_TOKEN` with the other
-  credential-looking variables (unless `env` in the configuration sets it). With `UPSTASH_REDIS_REST_URL` and
-  `UPSTASH_REDIS_REST_TOKEN` set, it uses Upstash Redis over REST instead, a store that every instance and every
-  deployment of the app shares.
+- **Store.** With `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` set, `defaultStore()` uses Upstash Redis
+  over REST, a durable store that every instance and every deployment of the app shares. **Production requires
+  it.** Without them it falls back to the file store, which is for local runs only: one JSON file per operation in
+  `.crashtest-idempotency/` in the working directory of `eve dev` (the app root, unless `CRASHTEST_IDEMPOTENCY_DIR`
+  names another directory). Add `.crashtest-idempotency/` to the app's `.gitignore`: the records are run state, not
+  code, and while the directory is untracked the app reads as having uncommitted changes, so `fix --report` ignores
+  the report. The lab ran with the file store: it removes `UPSTASH_REDIS_REST_TOKEN` with the other
+  credential-looking variables (unless `env` in the configuration sets it).
 
 When no candidate improves the tool, it prints `No candidate improved <tool>; nothing written.` and no patch is
 written. A tool that gets no candidates prints `No fix needed for <tool>: ★★★★★ (5/5) in lab.` or

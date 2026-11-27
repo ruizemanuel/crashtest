@@ -294,7 +294,8 @@ export function fixSummary(outcome: FixOutcome): string {
     const fields = outcome.identity.length === 0 ? "no fields" : outcome.identity.join(", ");
     lines.push(
       `Trade-off: a second legitimate call with the same identity (${fields}) in the same turn is blocked.`,
-      "In lab with the file store; set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN for a durable store in production.",
+      "Store: the lab used the file store, which is for local runs only and keeps its records in .crashtest-idempotency/ in the working directory of eve dev (the app root); add that directory to .gitignore.",
+      "Production requires a durable store: set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN (Upstash Redis REST).",
     );
   }
   return `${lines.join("\n")}\n`;
