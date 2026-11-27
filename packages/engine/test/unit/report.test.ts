@@ -426,6 +426,33 @@ test("a backslash in tool text cannot cancel the escape of a bracket", () => {
   assert.ok(row.includes("C:\\Users\\app"), "a backslash that is not before a bracket is left alone");
 });
 
+test("text from a tool cannot reference an issue or pull request", () => {
+  const hand: ToolRating = { ...lane("notify", clean).rating, stars: 3, summary: "see owner/repo#12, #7 and GH-3", recommendation: "C# code" };
+  const md = renderMarkdown(report([{ tool: "notify", rating: hand, runs: 5, wallMs: 1 }], []));
+  // GitHub turns `#12`, `owner/repo#12` and `GH-3` into issue references, and a reference to another repository posts an event there.
+  assert.doesNotMatch(md, /#\d/);
+  assert.doesNotMatch(md, /GH-\d/i);
+  assert.ok(md.includes("owner/repo#​12"));
+  assert.ok(md.includes("GH-​3"));
+  assert.ok(md.includes("#​7"));
+  assert.ok(md.includes("| C# code |"), "a # that is not followed by a digit is left alone");
+});
+
+test("character references cannot form a reference or a mention", () => {
+  // GitHub decodes character references before it looks for references and mentions, so `&` has to be escaped first.
+  const references = ["&num;12", "&#x23;12", "&#35;12", "GH&#x2d;3", "&commat;octocat", "&#x40;octocat"];
+  const hand: ToolRating = { ...lane("notify", clean).rating, stars: 3, summary: references.join(" "), recommendation: "none" };
+  const md = renderMarkdown(report([{ tool: "notify", rating: hand, runs: 5, wallMs: 1 }], []));
+  const row = section(md, "Findings").split("\n").find((l) => l.startsWith("| `notify`"))!;
+  // `&#35;12` keeps its `#` before a digit, so that `#` also gets the zero-width space.
+  const escaped = ["&amp;num;12", "&amp;#x23;12", "&amp;#​35;12", "GH&amp;#x2d;3", "&amp;commat;octocat", "&amp;#x40;octocat"];
+  for (const reference of escaped) assert.ok(row.includes(reference), `${reference} is in the row`);
+  assert.ok(row.includes(`| ${escaped.join(" ")} |`), "the six references keep their order and their text");
+  assert.doesNotMatch(md, /&(?!amp;|lt;|gt;)/, "no character reference is left in the output");
+  assert.doesNotMatch(md, /#\d/);
+  assert.doesNotMatch(md, /GH-\d/i);
+});
+
 test("a report with no tools at all renders", () => {
   const r = report([], []);
   assert.deepEqual(r.tools, []);

@@ -27,17 +27,27 @@ function cell(text: string): string {
 /**
  * Text that came from a tool, a provider or the config, made harmless in a comment: `<` cannot start HTML, an `@`
  * (followed by a zero-width space) cannot mention anyone, a bracket is escaped so the text cannot form a link or an
- * image, and a zero-width space inside `://` and `www.` keeps GitHub from turning the text into an autolink.
+ * image, and a zero-width space inside `://` and `www.` keeps GitHub from turning the text into an autolink. A
+ * zero-width space after a `#` that is followed by a digit, and after the `-` of `GH-` followed by a digit, keeps
+ * `#12`, `owner/repo#12` and `GH-3` from becoming issue references (a reference to another repository also posts an
+ * event there). Bare commit SHAs are left alone: they create no event in another repository.
+ *
+ * GitHub decodes HTML character references before it looks for references and mentions, so `&num;12`, `&#x23;12`,
+ * `GH&#x2d;3`, `&commat;octocat` and `&#x40;octocat` would still become live. That is why `&` is escaped as `&amp;`
+ * first, before any other rule (run later, it would also escape the `&lt;` that the `<` rule writes).
  */
 function plain(text: string): string {
   return (
     text
+      .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/@/g, "@\u200b")
       // A backslash already in the text would cancel the escape of the bracket after it, so those are doubled first.
       .replace(/(\\*)([[\]])/g, "$1$1\\$2")
       .replace(/:\/\//g, ":\u200b//")
       .replace(/www\./gi, (match) => `${match.slice(0, 3)}\u200b.`)
+      .replace(/#(?=\d)/g, "#\u200b")
+      .replace(/(GH-)(?=\d)/gi, "$1\u200b")
   );
 }
 
