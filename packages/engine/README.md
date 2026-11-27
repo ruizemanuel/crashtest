@@ -17,6 +17,8 @@ providers the lab does not model (see [Limits](#limits)).
 
 Requirements: Node.js 24.2 or later, on Linux or macOS (Windows works for development), and an eve app with its
 dependencies installed. crashtest has no eve dependency of its own: it drives the eve that the app has installed.
+It needs eve 1.2.0 or later (tested on 1.2.0 and 1.5.0): older versions lack `mockModel` in `eve/evals` and `eve dev --resume`,
+and crashtest refuses them with a message that says which version is installed.
 
 ```sh
 npm install --save-dev eve-crashtest    # or: pnpm add -D eve-crashtest
@@ -78,7 +80,8 @@ crashtest plan [--app <dir>] [--config <file>] [--json]
 ```
 
 Creates the lab, applies the overlay and asks `eve info` for the tools, then removes the lab. It prints the eve
-version, the tools that would run, the tools that are skipped and why, and an estimate. `--json` prints:
+version, the tools that would run, the tools that are skipped and why, and an estimate. Files in `agent/tools/` that only
+call `disableTool()` are not counted as tools. `--json` prints:
 
 ```json
 {

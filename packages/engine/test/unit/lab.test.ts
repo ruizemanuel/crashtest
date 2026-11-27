@@ -290,6 +290,20 @@ test("missing eve -> EngineError", () => {
   });
 });
 
+test("createLab refuses an eve older than 1.2.0 before copying anything", () => {
+  withTemp((root) => {
+    const app = join(root, "app");
+    seedApp(app);
+    put(app, "node_modules/eve/package.json", JSON.stringify({ name: "eve", version: "0.7.4", bin: { eve: "bin/eve.js" } }));
+
+    assert.throws(
+      () => createLab(app),
+      (err: unknown) => err instanceof EngineError && /eve 0\.7\.4 is installed/.test(err.message) && /needs eve 1\.2\.0 or later/.test(err.message),
+    );
+    assert.equal(existsSync(join(app, ".crashtest", "lab")), false);
+  });
+});
+
 test("labEnv scrubs credentials", () => {
   const env = labEnv(
     { PATH: "p", NODE_OPTIONS: "--x", STRIPE_SECRET_KEY: "s", AI_GATEWAY_API_KEY: "k", VERCEL_OIDC_TOKEN: "t", GH_TOKEN: "g" },

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { EngineError } from "../../src/errors.ts";
-import { killAllTracked, killTree, preloadImportFlag, resolveEveBin, spawnTracked, withPreload } from "../../src/driver/process.ts";
+import { assertSupportedEve, killAllTracked, killTree, preloadImportFlag, resolveEveBin, spawnTracked, withPreload } from "../../src/driver/process.ts";
 
 const ENGINE_DIR = join(import.meta.dirname, "..", "..");
 
@@ -132,4 +132,13 @@ test("killAllTracked and killTree ignore children that already exited", async ()
   } finally {
     killTree(child);
   }
+});
+
+test("assertSupportedEve accepts 1.2.0 and later, compared as numbers", () => {
+  for (const v of ["1.2.0", "1.5.0", "1.10.0", "2.0.0", "1.2.1-canary.1"]) assert.doesNotThrow(() => assertSupportedEve(v, "/app"), v);
+});
+
+test("assertSupportedEve refuses older or unreadable versions", () => {
+  for (const v of ["1.1.9", "0.7.4", "1.2.0-canary.1"]) assert.throws(() => assertSupportedEve(v, "/app"), /needs eve 1\.2\.0 or later/, v);
+  for (const v of ["latest", "", "1.2"]) assert.throws(() => assertSupportedEve(v, "/app"), /cannot read the version/, v);
 });

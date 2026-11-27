@@ -62,6 +62,28 @@ test("tools are the authored files that eve lists, sorted, with their schemas; t
   assert.deepEqual(discovery.eve, { version: "1.5.0", capabilities: { replayNever: false } });
 });
 
+test("a file that only disables a framework tool is neither a tool nor skipped", async (t) => {
+  // eve info no longer lists bash and read_file: the authored files are the switches that turned them off.
+  const lab = setup(t, JSON.stringify(info({ tools: ["agent", "naive"] })), ["naive.ts", "ghost.ts"]);
+  put(lab.labDir, "agent/tools/bash.ts", 'import { disableTool } from "eve/tools";\nexport default disableTool();\n');
+  put(lab.labDir, "agent/tools/read_file.mjs", 'import { disableTool } from "eve/tools";\nexport default disableTool ( );\n');
+
+  const discovery = await discover(lab, {});
+
+  assert.deepEqual(discovery.tools.map((x) => x.name), ["naive"]);
+  assert.deepEqual(discovery.skipped, [{ name: "ghost", reason: SKIP_NOT_LISTED }]);
+});
+
+test("a listed tool whose file mentions disableTool is still a tool", async (t) => {
+  const lab = setup(t, JSON.stringify(info()), ["naive.ts"]);
+  put(lab.labDir, "agent/tools/readonly.ts", 'import { disableTool } from "eve/tools";\n// disableTool() is for framework tools\nexport default {};\n');
+
+  const discovery = await discover(lab, {});
+
+  assert.deepEqual(discovery.tools.map((x) => x.name), ["naive", "readonly"]);
+  assert.deepEqual(discovery.skipped, []);
+});
+
 test("a listed tool without a schema gets a null schema", async (t) => {
   const lab = setup(t, JSON.stringify(info({ toolInputSchemas: { root: {} } })), ["naive.ts"]);
   assert.deepEqual((await discover(lab, {})).tools, [{ name: "naive", file: "agent/tools/naive.ts", inputSchema: null }]);

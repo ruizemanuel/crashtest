@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { preloadImportFlag, resolveEveBin, withPreload } from "./driver/process.ts";
+import { assertSupportedEve, preloadImportFlag, resolveEveBin, withPreload } from "./driver/process.ts";
 import { EngineError } from "./errors.ts";
 import { preloadPath } from "./paths.ts";
 
@@ -36,6 +36,7 @@ export function createLab(appDir: string, opts: { outDir?: string; labDir?: stri
 
   // The lab sits inside the app, so eve resolves upward; failing here touches nothing on disk.
   const eve = resolveEveBin(labDir);
+  assertSupportedEve(eve.version, app);
 
   // The output directory (and the lab in it) is never copied into the lab itself.
   const outputDirs = [toPosix(relative(app, outDir))];

@@ -20,6 +20,27 @@ export function resolveEveBin(appDir: string): { bin: string; version: string } 
   return { bin: join(dirname(pkgPath), pkg.bin.eve), version: pkg.version };
 }
 
+/** The oldest eve the lab can drive: earlier versions lack `mockModel` in `eve/evals` and `eve dev --resume`. */
+export const MIN_EVE_VERSION = "1.2.0";
+
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** Throws an `EngineError` unless `version` (the eve installed for `appDir`) is `MIN_EVE_VERSION` or later; a prerelease of the floor is below it. */
+export function assertSupportedEve(version: string, appDir: string): void {
+  const match = SEMVER.exec(version);
+  if (match === null) throw new EngineError(`cannot read the version of the eve installed for ${appDir} (${JSON.stringify(version)})`);
+  const have = match.slice(1, 4).map(Number);
+  const floor = MIN_EVE_VERSION.split(".").map(Number);
+  const isPrerelease = version.startsWith(`${match.slice(1, 4).join(".")}-`);
+  let cmp = 0;
+  for (let i = 0; i < 3 && cmp === 0; i++) cmp = have[i]! - floor[i]!;
+  if (cmp < 0 || (cmp === 0 && isPrerelease)) {
+    throw new EngineError(
+      `eve ${version} is installed for ${appDir}, but crashtest needs eve ${MIN_EVE_VERSION} or later (older versions lack mockModel in eve/evals and eve dev --resume): upgrade eve in the app`,
+    );
+  }
+}
+
 /** `--import=<file URL>` for NODE_OPTIONS; the URL form is required on Windows and encodes spaces. */
 export function preloadImportFlag(path: string): string {
   return `--import=${pathToFileURL(path).href}`;

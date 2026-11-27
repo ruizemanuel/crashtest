@@ -25,7 +25,8 @@ const OVERLAID_MODEL = "crashtest/crashtest-script";
 const INFO_TIMEOUT_MS = 120_000;
 const TOOL_FILE = /\.(ts|mts|js|mjs)$/;
 const NOT_A_TOOL = /\.(spec|test)\./;
-const REPLAY_NEVER = /\breplay\?:\s*["']never["']/;
+const DISABLE_TOOL = /\bdisableTool\s*\(/;
+const REPLAY_NEVER =/\breplay\?:\s*["']never["']/;
 const TAIL_CHARS = 2000;
 /** Run directory of the discovery under `<outDir>/runs/`; the leading underscore keeps it apart from tool names. */
 const DISCOVER_RUN = "_discover";
@@ -49,8 +50,9 @@ export async function discover(lab: Lab, config: CrashtestConfig): Promise<Disco
   const skipped = new Map<string, string>();
   for (const { name, file } of authoredTools(lab.labDir)) {
     if (excluded.has(name)) continue; // reported below with the rest of the exclude list
-    if (!listed.has(name)) skipped.set(name, SKIP_NOT_LISTED);
-    else tools.push({ name, file, inputSchema: asSchema(schemas[name]) });
+    if (!listed.has(name)) {
+      if (!onlyDisablesFrameworkTool(lab.labDir, file)) skipped.set(name, SKIP_NOT_LISTED);
+    } else tools.push({ name, file, inputSchema: asSchema(schemas[name]) });
   }
   for (const name of excluded) skipped.set(name, SKIP_EXCLUDED);
 
@@ -76,6 +78,19 @@ function authoredTools(labDir: string): { name: string; file: string }[] {
     if (!found.has(name)) found.set(name, `agent/tools/${entry.name}`);
   }
   return [...found].map(([name, file]) => ({ name, file }));
+}
+
+/**
+ * A file in `agent/tools/` that calls `disableTool()` turns a framework tool off (templates ship such files for
+ * `bash` and friends): it defines no tool, so it is neither tested nor reported as skipped. Only files that eve did
+ * not list are asked: a listed tool is a tool whatever its source says.
+ */
+function onlyDisablesFrameworkTool(labDir: string, file: string): boolean {
+  try {
+    return DISABLE_TOOL.test(readFileSync(join(labDir, ...file.split("/")), "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 function asSchema(value: unknown): JsonSchema | null {
