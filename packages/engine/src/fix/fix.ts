@@ -262,13 +262,16 @@ function readIfExists(target: string, path: string, tool: string): string | null
 /**
  * The report's ratings by tool when they describe the code the app has now: the report was made on a clean tree at
  * the commit the app is at, and the app has no uncommitted changes (`app` is `readGit` of the app); otherwise why not.
+ * Only a report whose `target.dirty` is `false` counts as made on a clean tree.
  */
 export function usableRatings(report: Report, app: GitFacts): { ratings: Map<string, ToolRating> } | { unusable: string } {
   const made = report.target.commit;
+  const dirty: unknown = report.target.dirty;
   if (made === null) return { unusable: "it records no commit" };
   if (app.commit === null) return { unusable: "the app has no git commit to compare it with" };
   if (made !== app.commit) return { unusable: `it was made at commit ${made} and the app is at ${app.commit}` };
-  if (report.target.dirty) return { unusable: "it was made on uncommitted changes" };
+  if (dirty === true) return { unusable: "it was made on uncommitted changes" };
+  if (dirty !== false) return { unusable: "it does not record whether it was made on uncommitted changes" };
   if (app.dirty) return { unusable: "the app has uncommitted changes now" };
   return { ratings: new Map(report.tools.map((rating) => [rating.tool, rating])) };
 }

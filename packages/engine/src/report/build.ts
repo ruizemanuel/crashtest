@@ -56,7 +56,8 @@ function outDirInApp(appDir: string, outDir: string): string | null {
 /**
  * The short commit of `HEAD` and whether the app has uncommitted changes; both empty outside a repository.
  * Only changes inside the app count, and the output directory is left out: the engine has just written into it, and
- * that is not a change to the code that was tested.
+ * that is not a change to the code that was tested. A `git status` that fails or times out reads as dirty: a tree
+ * nobody could check is not a clean one.
  */
 export function readGit(appDir: string, outDir: string): GitFacts {
   const commit = git(appDir, ["rev-parse", "--short=7", "HEAD"])?.trim();
@@ -64,7 +65,7 @@ export function readGit(appDir: string, outDir: string): GitFacts {
   const out = outDirInApp(appDir, outDir);
   const scope = out === null ? ["."] : [".", `:(exclude,literal)${out}`];
   const status = git(appDir, ["--no-optional-locks", "status", "--porcelain", "--", ...scope]);
-  return { commit, dirty: status !== null && status.trim() !== "" };
+  return { commit, dirty: status === null || status.trim() !== "" };
 }
 
 export function buildReport(o: BuildReportOptions): Report {

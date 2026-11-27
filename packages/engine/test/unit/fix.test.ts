@@ -249,5 +249,14 @@ test("a report made on uncommitted changes is not used", () => {
 });
 
 test("a report is not used while the app has uncommitted changes", () => {
+test("a report that does not say whether its tree was clean is not used", () => {
+  const made = report("abc1234", [rating(1, {})]);
+  const { dirty: _dirty, ...withoutDirty } = made.target;
+  for (const target of [withoutDirty, { ...made.target, dirty: "false" }, { ...made.target, dirty: null }]) {
+    const unclear = { ...made, target } as unknown as Report;
+    assert.deepEqual(usableRatings(unclear, CLEAN_APP), { unusable: "it does not record whether it was made on uncommitted changes" }, JSON.stringify(target));
+  }
+});
+
   assert.deepEqual(usableRatings(report("abc1234", [rating(1, {})]), { commit: "abc1234", dirty: true }), { unusable: "the app has uncommitted changes now" });
 });

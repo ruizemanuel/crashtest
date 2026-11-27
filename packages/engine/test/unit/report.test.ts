@@ -190,6 +190,23 @@ test("a new file inside the app makes it dirty", (t) => {
   }
 });
 
+test("a git status that fails reads as dirty, never as clean", (t) => {
+  if (git(tmpdir(), "--version").status !== 0) return t.skip("git is not installed");
+  const dir = mkdtempSync(join(tmpdir(), "ct-git-"));
+  try {
+    const { app } = monorepo(dir);
+    assert.equal(isDirty(app), false);
+    // A damaged index: HEAD still resolves, but `git status` fails.
+    writeFileSync(join(dir, "mono", ".git", "index"), "not an index");
+    assert.notEqual(git(app, "status", "--porcelain").status, 0, "the precondition: git status fails");
+    const report = buildReport({ appDir: app, eve: EVE, lanes: [], skipped: [], now: NOW });
+    assert.match(report.target.commit ?? "", /^[0-9a-f]{7}$/);
+    assert.equal(report.target.dirty, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("git facts come from the app directory, and are empty outside a repository", (t) => {
   if (git(tmpdir(), "--version").status !== 0) return t.skip("git is not installed");
 
