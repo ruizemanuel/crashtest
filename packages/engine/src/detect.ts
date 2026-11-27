@@ -106,22 +106,37 @@ const AUTH_PROBLEM = /unauthori[sz]ed|authori[sz]ation|authenticat|forbidden|per
 /** A failure that reads as the tool rejecting its input. */
 const INPUT_PROBLEM = /invalid|expected|required|validation|must be|schema/i;
 
-/** What to append to a baseline problem: the configuration key that most likely fixes it. */
-function baselineHint(tool: string, problem: string): string {
-  if (AUTH_PROBLEM.test(problem)) {
+/** Why a baseline run is not usable: the tool call's own error message, or a problem the engine words itself. */
+interface BaselineProblem {
+  text: string;
+  toolError: boolean;
+}
+
+/**
+ * What to append to a baseline problem: the configuration key that most likely fixes it. Only the tool's own error
+ * is read for words; the engine's own text (a server that did not start, a session create that failed, a log tail)
+ * names sessions and contexts of its own, so it always gets the general hint.
+ */
+function baselineHint(tool: string, problem: BaselineProblem): string {
+  if (problem.toolError && AUTH_PROBLEM.test(problem.text)) {
     return ` — set auth or scenarios.${tool}.auth in crashtest.config.json to give the lab session the identity this tool checks`;
   }
-  if (INPUT_PROBLEM.test(problem)) return ` — set scenarios.${tool}.input in crashtest.config.json`;
+  if (problem.toolError && INPUT_PROBLEM.test(problem.text)) return ` — set scenarios.${tool}.input in crashtest.config.json`;
   return ` — see the run directory; crashtest.config.json can set scenarios.${tool}.input, auth, env and fixtures`;
 }
 
 /** Why a baseline run is not usable, or null when it is. The call's own error message wins when there is one. */
-function baselineProblem(tool: string, run: RunSummary): string | null {
+function baselineProblem(tool: string, run: RunSummary): BaselineProblem | null {
   const last = callsTo(run).at(-1);
   const completed = run.turnOutcome === "completed" && run.preloadReady && last?.outcome === "completed";
   if (completed) return null;
   const message = errorMessage(last?.error);
-  if (message !== "") return message;
+  if (message !== "") return { text: message, toolError: true };
+  return { text: engineProblem(tool, run, last), toolError: false };
+}
+
+/** A failed baseline without an error message from the tool, as the engine words it. */
+function engineProblem(tool: string, run: RunSummary, last: StreamCall | undefined): string {
   if (!run.preloadReady) return "the Crashtest preload did not load";
   if (run.turnOutcome !== "completed") return `the turn ended as ${run.turnOutcome}${run.error ? `: ${run.error}` : ""}`;
   if (!last) return `the model never called ${tool}`;
@@ -145,7 +160,7 @@ function sameCounts(a: Map<string, number>, b: Map<string, number>): boolean {
 export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, config: CrashtestConfig): BaselineFacts {
   for (const run of [b1, b2]) {
     const problem = baselineProblem(tool, run);
-    if (problem !== null) return { ok: false, reason: "baseline-failed", detail: `${problem}${baselineHint(tool, problem)}` };
+    if (problem !== null) return { ok: false, reason: "baseline-failed", detail: `${problem.text}${baselineHint(tool, problem)}` };
   }
   const first = mutatingEntries(b1, config);
   const second = mutatingEntries(b2, config);

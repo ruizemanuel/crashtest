@@ -267,12 +267,13 @@ can be committed.
 5. **Input.** Each tool is called with one input, generated deterministically from its input schema or taken from
    `scenarios.<tool>.input` in the configuration.
 6. **Lanes.** Each tool runs through the cells below; then its verdicts become stars. When a baseline run fails, the
-   tool is not evaluated and the reason ends with the likely fix. A message that mentions authorization or
-   authentication, says unauthorized, forbidden, permission denied, not allowed or sign in, or mentions the session,
-   a context, 401 or 403 points at `auth` or `scenarios.<tool>.auth`, which give the lab session the identity the
-   tool checks. Otherwise, a message about an invalid, expected or required value, a validation, a schema or what a
-   value must be points at `scenarios.<tool>.input`. Anything else points at the run directory and the keys that can
-   help: `scenarios.<tool>.input`, `auth`, `env` and `fixtures`.
+   tool is not evaluated and the reason ends with the likely fix. When the tool's own error mentions authorization
+   or authentication, says unauthorized, forbidden, permission denied, not allowed or sign in, or mentions the
+   session, a context, 401 or 403, the reason points at `auth` or `scenarios.<tool>.auth`, which give the lab session
+   the identity the tool checks. Otherwise, when the tool's own error is about an invalid, expected or required
+   value, a validation, a schema or what a value must be, it points at `scenarios.<tool>.input`. Anything else,
+   including every failure crashtest reports itself (a server that did not start, a turn that did not complete),
+   points at the run directory and the keys that can help: `scenarios.<tool>.input`, `auth`, `env` and `fixtures`.
 
 ## Cells
 

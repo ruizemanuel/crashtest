@@ -363,6 +363,14 @@ test("baseline hints follow the failure", () => {
   assert.equal(detailFor("fetch failed"), `fetch failed${GENERAL_HINT}`);
 });
 
+test("a baseline problem the engine words itself always gets the general hint", () => {
+  const startup = naive({ calls: [], turnOutcome: "startup-failed", error: "session create failed: 500 invalid context" });
+  const facts = baselineFacts("naive", startup, naive({ cellId: "baseline-2" }), {});
+  assert.ok(!facts.ok);
+  assert.equal(facts.reason, "baseline-failed");
+  assert.equal(facts.detail, `the turn ended as startup-failed: session create failed: 500 invalid context${GENERAL_HINT}`);
+});
+
 test("baselineFacts judges the last call to the tool", () => {
   const recovered = naive({ calls: [call({ outcome: "failed", error: "first try failed" }), call({ callId: "call_2" })] });
   const facts = baselineFacts("naive", recovered, naive({ cellId: "baseline-2" }), {});
