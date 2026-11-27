@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // The `crashtest` command line. Every argument is parsed and checked before any lab work starts. Exit codes: 0 done,
-// 1 an engine or config error or an agent rating below `--min-stars`, 2 a usage error, 130 interrupted (SIGINT).
+// 1 an engine or config error or an agent rating below `--min-stars`, 2 a usage error, 130 interrupted (SIGINT), 143
+// terminated (SIGTERM), 129 hung up (SIGHUP).
 // stdout carries only results (`--json` or the final summary); progress and errors go to stderr.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { constants } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { audit, auditLane, planAudit, reportFiles, type AuditPlan } from "./audit.ts";
 import { loadConfig, type CrashtestConfig } from "./config.ts";
@@ -373,10 +375,12 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 if (import.meta.main) {
-  // Ctrl-C: on POSIX every `eve dev` leads its own process group, so it would outlive the CLI unless killed here.
-  process.on("SIGINT", () => {
+  // Ctrl-C, a CI cancel or `timeout` (SIGTERM), a closed terminal (SIGHUP): on POSIX every `eve dev` leads its own
+  // process group, so it would outlive the CLI unless killed here. The exit code is the shell's 128 + signal number.
+  const interrupted = (signal: NodeJS.Signals): void => {
     killAllTracked();
-    process.exit(130);
-  });
+    process.exit(128 + constants.signals[signal]);
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, interrupted);
   process.exitCode = await main(process.argv.slice(2));
 }

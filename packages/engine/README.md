@@ -69,7 +69,7 @@ stdout carries only results (the `--json` output or the final summary); progress
 | 0 | Done (for `run` with `--min-stars`: the agent met the bar; for `fix`: also when no candidate improved a tool). |
 | 1 | An error (the message starts with `crashtest:`), or the agent rating is below `--min-stars`. |
 | 2 | A usage error: unknown option, missing value, missing `--tool` (for `fix`: neither or both of `--tool` and `--all`), `--min-stars` outside 1 to 5. Nothing ran. |
-| 130 | Interrupted with Ctrl-C (SIGINT). Every `eve dev` that crashtest started is killed first. |
+| 130, 143, 129 | Interrupted by SIGINT (Ctrl-C), SIGTERM (a CI cancel, `timeout`) or SIGHUP (a closed terminal): 128 plus the signal number. Every `eve dev` that crashtest started is killed first. |
 
 ### `crashtest plan`
 

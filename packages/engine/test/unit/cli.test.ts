@@ -47,6 +47,17 @@ test("--version prints the package version", async () => {
   assert.equal(out.text().trim(), "0.1.0");
 });
 
+test("the CLI process handles SIGINT, SIGTERM and SIGHUP alike, exiting with 128 + the signal number", () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "cli.ts");
+  // Emitting the signal event stands in for the signal itself, which Windows cannot deliver to a Node process.
+  const cases: [NodeJS.Signals, number][] = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]];
+  for (const [signal, code] of cases) {
+    const emit = `data:text/javascript,setTimeout(() => process.emit(${JSON.stringify(signal)}, ${JSON.stringify(signal)}), 0);`;
+    const result = spawnSync(process.execPath, [`--import=${emit}`, cli, "--version"], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(result.status, code, `${signal}: ${result.stderr}`);
+  }
+});
+
 test("unknown command exits 2 with usage on stderr", async () => {
   const err = stderr();
   assert.equal(await main(["nope"]), 2);
