@@ -27,8 +27,9 @@ eve version message. Only the gaps "S5 after the engine hardening" lists remain 
 FALLBACK, for a new reason: the three 2-star ratings are repeats that the real store absorbs (engine finding 1).
 
 Update (2026-11-27, engine at `cd994e2`): on the SRE template, `create_skill`, `watch_slack_channel` and
-`unwatch_slack_channel` now get 5 stars with benign repeats (Vercel Blob is modeled per object, and the template
-overwrites with `allowOverwrite: true`). `delete_skill` is not evaluated because its baseline failed (the skill to
+`unwatch_slack_channel` now get 5 stars with benign repeats (Vercel Blob is modeled per object: `create_skill` and
+`watch_slack_channel` overwrite with `allowOverwrite: true`, and `unwatch_slack_channel` repeats the delete of an
+object that is already deleted). `delete_skill` is not evaluated because its baseline failed (the skill to
 delete is not found), and the other seven tools are not evaluated (no effect). Engine findings 1, 3 and 4 of "S5 after
 the engine hardening" are resolved and finding 2 is resolved in part. The decision is now PRIMARY (see "S5 after the
 pre-M3 batch").
@@ -469,7 +470,7 @@ crash cell was clean, so no confirmation run was needed (the earlier run had 40 
 
 | Tool | Before (S5 after the engine hardening) | Now | Runs | Wall s | Blob write and its options | Blob behavior the rating relies on |
 |---|---|---|---|---|---|---|
-| `create_skill` | 2 stars: dup (stable), dup (fresh), clean (abandoned), clean (abandoned); 8 runs, 192.5 s | 5 stars, benign repeats: clean (1 benign) in both fast cells, clean (abandoned) in slow and post-settle | 6 | 141.5 | `put(pathname, content, { access: "private", addRandomSuffix: false, allowOverwrite: true, contentType: "application/json" })` at `agent/lib/blob.ts:40-45`, called from `agent/lib/skills/store.ts:196-199`; the body's `updatedAt` is set at `store.ts:193` | A put with `allowOverwrite: true` and no random suffix replaces the object at its pathname: the repeat is not refused and leaves one object, with the later `updatedAt` |
+| `create_skill` | 2 stars: dup (stable), dup (fresh), clean (abandoned), clean (abandoned); 8 runs, 192.5 s | 5 stars, benign repeats: clean (1 benign) in both fast cells, clean (abandoned) in slow and post-settle | 6 | 141.5 | `put(pathname, content, { access: "private", addRandomSuffix: false, allowOverwrite: true, contentType: "application/json" })` at `agent/lib/blob.ts:40-45`, called from `agent/lib/skills/store.ts:196-199`; the body's `updatedAt` is set at `store.ts:193` | A put with `allowOverwrite: true` and no random suffix replaces the object at its pathname: the repeat is not refused and leaves one object, with the later `updatedAt` (Vercel's Blob documentation: `allowOverwrite` explicitly allows overwriting an existing blob with the same pathname) |
 | `watch_slack_channel` | 2 stars: same four verdicts; 8 runs, 194.0 s | 5 stars, benign repeats: the same four verdicts as `create_skill` | 6 | 142.7 | the same `put` at `agent/lib/blob.ts:40-45`, called from `agent/lib/channel-watch/store.ts:77`; the body's `watchedAt` is set at `store.ts:74` | the same overwrite, with the later `watchedAt` |
 | `unwatch_slack_channel` | 2 stars: same four verdicts; 8 runs, 190.2 s | 5 stars, benign repeats: the same four verdicts as `create_skill` | 6 | 137.9 | `del(pathname)` with no options (no `ifMatch`) at `agent/lib/blob.ts:15`, called from `agent/lib/channel-watch/store.ts:89` | a delete of an object that is gone succeeds and changes nothing (Vercel's `del()` reference: it "won't throw if the blob url doesn't exist"); the one state change is the first delete of an object the lab never saw, which the lab takes as existing |
 | `delete_skill` | not evaluated: no external effect; the skill to delete is not found; 2 runs, 27.1 s | not evaluated: baseline failed; the reason quotes the refusal `No global skill named "crashtest-name" was found.` and gives the general hint (`scenarios.delete_skill.input`, `auth`, `env` and `fixtures`) | 2 | 27.1 | — | — |
@@ -491,8 +492,11 @@ crash cell was clean, so no confirmation run was needed (the earlier run had 40 
   restart the tool wrote the same object again.
 - **Why the repeats are benign.** For a put, `@vercel/blob` 2.4.0 sends the two options as `x-add-random-suffix: 0`
   and `x-allow-overwrite: 1`, and the fake provider answered the second put with 200 (without the overwrite option
-  it refuses a put to a stored object with "This blob already exists, use allowOverwrite: true to overwrite it"). The
-  ledger keeps that put as a state change, since its body differs in `updatedAt` (`watchedAt` for
+  it refuses a put to a stored object with "This blob already exists, use allowOverwrite: true to overwrite it").
+  That is the real store's documented behavior: Vercel's Blob documentation says that `allowOverwrite` explicitly
+  allows overwriting an existing blob with the same pathname, and that by default an upload to an existing pathname
+  fails with an error. With `addRandomSuffix: true` the repeat would write a new object instead, so it would not be a
+  benign repeat. The ledger keeps that put as a state change, since its body differs in `updatedAt` (`watchedAt` for
   `watch_slack_channel`). The two baselines show that field as varying on `PUT vercel.com/api/blob/`, and the put names
   its object (`vercel-blob:<pathname>`), so the cell counts it as a benign repeat, and the summary says what that
   rests on: "A repeated write went to the same object and differed only in `updatedAt`, which vary between the
@@ -509,7 +513,12 @@ crash cell was clean, so no confirmation run was needed (the earlier run had 40 
   `crashtest.private.blob.vercel-storage.com/sre-custom-skills/global/crashtest-name.json`, which gets the generic
   answer. The template logs `skipping malformed skill`, finds no skill, sends no delete and returns
   `{"error": "No global skill named \"crashtest-name\" was found.", "success": false}`. The refusal names no
-  authorization or input problem, so the reason gets the general hint.
+  authorization or input problem, so the reason gets the general hint. None of that hint's remedies works for this
+  tool today: the skill has to exist in the store before the turn, and the lab neither serves a Blob object's content
+  nor seeds one (finding 2 below). A fixture on the content GET would not stand in for them: it answers every read the
+  same, so a crash cell's replay would find the skill again and send its delete again, a benign repeat in the lab
+  (Blob deletes are modeled), and the tool would get 5 stars, while against the real store the replay's `get()` finds
+  nothing and the tool returns the refusal after the delete happened, a phantom failure.
 - **The crash point skips the reads**, as before: in every crash cell of `watch_slack_channel` the crash came right
   after the Blob PUT, the first request that is an effect.
 
@@ -558,8 +567,10 @@ so the rating would not change.
    `delete_skill` and the seven tools without an effect are not evaluated, which is neither a rating nor a pass.
 4. **No benign verdict rests on a repeat that the real store would refuse or duplicate: holds.** The benign repeats
    are a put with `allowOverwrite: true` and `addRandomSuffix: false` (`agent/lib/blob.ts:40-45`), which the store
-   applies as an overwrite of the same object, and a `del()` without `ifMatch` (`agent/lib/blob.ts:15`), which the
-   store accepts for an object that is gone.
+   applies as an overwrite of the same object (Vercel's Blob documentation: `allowOverwrite` explicitly allows
+   overwriting an existing blob with the same pathname, where by default an upload to an existing pathname fails;
+   with `addRandomSuffix: true` a repeat would write a new object and would not be benign), and a `del()` without
+   `ifMatch` (`agent/lib/blob.ts:15`), which the store accepts for an object that is gone.
 
 **Decision: PRIMARY** — all four conditions hold: the SRE template's three Blob write tools get 5 stars with a 21-line configuration, and every benign repeat behind those ratings is an overwrite or a delete that the real store absorbs, given the write options in the template source. The template appears in the demo as the real case, rated as it is here, and `examples/acme-support` still carries the story from 1 to 5 stars.
 
