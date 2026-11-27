@@ -1,6 +1,7 @@
 // Turns run summaries into facts: what a clean run looks like (baselineFacts) and what a crashed run did
 // compared with it (analyzeCell). Pure: no I/O, no clock.
 import type { CrashtestConfig } from "./config.ts";
+import { ignoreMatcher } from "./preload/effects-ignore.ts";
 import type { Cell, CellVerdict, EffectEvidence, LedgerEntry, NaReason, RunSummary, StreamCall } from "./types.ts";
 
 export type BaselineFacts =
@@ -24,16 +25,10 @@ export function hostOfEndpoint(endpoint: string): string {
 
 // --- ledger helpers -------------------------------------------------------------------------------------------
 
-/** A glob where `*` matches any run of characters and everything else is literal; it must match the whole url. */
-function globToRegExp(glob: string): RegExp {
-  const literal = (text: string) => text.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${glob.split("*").map(literal).join(".*")}$`, "s");
-}
-
 /** The mutating ledger entries of a run, minus those the config says to ignore. Reads never count as effects. */
 function mutatingEntries(run: RunSummary, config: CrashtestConfig): LedgerEntry[] {
-  const ignored = (config.effects?.ignore ?? []).map(globToRegExp);
-  return run.ledger.filter((entry) => entry.mutating && !ignored.some((pattern) => pattern.test(entry.url)));
+  const ignored = ignoreMatcher(config.effects?.ignore ?? []);
+  return run.ledger.filter((entry) => entry.mutating && !ignored(entry.url));
 }
 
 function groupByEndpoint(entries: LedgerEntry[]): Map<string, LedgerEntry[]> {

@@ -173,6 +173,19 @@ switch (scenario) {
     say({ event: "lookup", ...(await send("GET", "https://api.stripe.com/v1/refunds?charge=ch_1", { headers: { authorization: "Bearer sk_live_secret" } })) });
     say({ event: "response", ...(await refund()) });
     break;
+  case "token-then-refund":
+    // A token exchange sent as a POST before the tool's own effect, as Vercel Connect does.
+    say({ event: "token", ...(await send("POST", "https://api.vercel.com/v1/connect/token/slack%2Fsre", { headers: { "content-type": "application/json" }, body: {} })) });
+    say({ event: "response", ...(await refund()) });
+    break;
+  case "fs-build-then-append":
+    // Build output written inside the lab before the tool's own effect.
+    mkdirSync(".next", { recursive: true });
+    mkdirSync("data", { recursive: true });
+    writeFileSync(".next/build-manifest.json", "{}");
+    say({ event: "built" });
+    appendFileSync("data/outbox.jsonl", OUTBOX_LINE);
+    break;
   case "webhook":
     say({ event: "response", ...(await send("POST", "https://hooks.slack.com/services/T0/B0/XyZsecret?key=k9", { headers: { "content-type": "application/json" }, body: { text: "hi" } })) });
     break;

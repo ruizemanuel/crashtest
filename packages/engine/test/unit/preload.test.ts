@@ -198,6 +198,37 @@ test("only mutating requests trigger the crash and other crash points are left t
   }
 });
 
+test("a request that effects.ignore names never claims the crash: the crash follows the next effect", async (t) => {
+  const runDir = tempDir(t);
+  const env = { CT_CRASH_POINT: "post-effect-fast", CT_EFFECTS_IGNORE: JSON.stringify(["https://api.vercel.com/v1/connect/*"]) };
+  const out = await runChild("token-then-refund", { runDir, env });
+  assert.notEqual(out.code, 0);
+  // The ignored POST was answered; the process died after the refund, before its answer.
+  assert.equal(eventOf(out, "token")?.status, 200);
+  assert.equal(eventOf(out, "response"), undefined);
+  assert.equal(printedAfter(out), false);
+  assert.equal(readFileSync(join(runDir, "crashed.marker"), "utf8"), `post-effect-fast pid=${out.pid}`);
+  // Both are in the ledger, the ignored one too: detection leaves it out when it counts.
+  assert.deepEqual(readLedger(runDir).map((e) => [e.endpoint, e.mutating]), [["POST api.vercel.com/v1/connect/token/slack%2Fsre", true], ["POST api.stripe.com/v1/refunds", true]]);
+
+  // Without the ignore list the first POST claims the crash.
+  const plainRunDir = tempDir(t);
+  const plain = await runChild("token-then-refund", { runDir: plainRunDir, env: { CT_CRASH_POINT: "post-effect-fast" } });
+  assert.equal(eventOf(plain, "token"), undefined);
+  assert.deepEqual(readLedger(plainRunDir).map((e) => e.endpoint), ["POST api.vercel.com/v1/connect/token/slack%2Fsre"]);
+});
+
+test("an ignore list that is not a JSON array of strings stops the process before it runs", async (t) => {
+  for (const value of ["not json", '{"a":1}', "[1]"]) {
+    const runDir = tempDir(t);
+    const out = await runChild("refund", { runDir, env: { CT_EFFECTS_IGNORE: value } });
+    assert.notEqual(out.code, 0, value);
+    assert.equal(printedAfter(out), false, value);
+    assert.match(out.stderr, /CT_EFFECTS_IGNORE/, value);
+    assert.deepEqual(readLedger(runDir), [], value);
+  }
+});
+
 test("state persists across processes", async (t) => {
   const runDir = tempDir(t);
   const first = await runChild("refund-keyed", { runDir });
@@ -484,4 +515,13 @@ test("the crash of a file write happens once, and the other crash points leave i
     assert.equal(printedAfter(calm.out), true, point);
     assert.equal(existsSync(join(calm.runDir, "crashed.marker")), false, point);
   }
+});
+
+test("a file write that effects.ignore names never claims the crash: the crash follows the next effect", async (t) => {
+  const { out, runDir } = await runInLab(t, "fs-build-then-append", { env: { CT_CRASH_POINT: "post-effect-fast", CT_EFFECTS_IGNORE: JSON.stringify([".next/*"]) } });
+  assert.notEqual(out.code, 0);
+  assert.equal(eventOf(out, "built")?.event, "built");
+  assert.equal(printedAfter(out), false);
+  assert.equal(readFileSync(join(runDir, "crashed.marker"), "utf8"), `post-effect-fast pid=${out.pid}`);
+  assert.deepEqual(readLedger(runDir).map((e) => e.endpoint), ["WRITE .next/build-manifest.json", "APPEND data/outbox.jsonl"]);
 });

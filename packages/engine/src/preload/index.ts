@@ -10,12 +10,15 @@
 //   CT_SLOW_HOLD_MS     how long post-effect-slow waits before the kill (default 2000)
 //   CT_FIXTURES         optional path of a JSON file with an array of fixtures
 //   CT_LAB_DIR          the lab; when set, node:fs writes inside it are recorded as effects (see fs-effects.ts)
+//   CT_EFFECTS_IGNORE   optional JSON array of the config's `effects.ignore` globs: a request or file write they match
+//                       is still recorded, but never claims the crash point
 //
 // Runs inside the agent's own process: Node built-ins and the interceptor only, and no output of its own.
 import fs, { mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { HttpRequestInterceptor } from "@mswjs/interceptors/http";
 import type { LedgerEntry } from "../types.ts";
+import { ignoreMatcher } from "./effects-ignore.ts";
 import { createFakeProvider, type FakeEffect, type FakeResult, type Fixture, type ProviderState } from "./fake-provider.ts";
 import { installFsEffects } from "./fs-effects.ts";
 import { isRecord, redactUrl } from "./normalize.ts";
@@ -127,6 +130,21 @@ function loadFixtures(file: string | undefined): Fixture[] {
   return parsed as Fixture[];
 }
 
+/** The matcher of CT_EFFECTS_IGNORE (nothing is ignored without it). Anything but a JSON array of strings is an error. */
+function loadIgnore(raw: string | undefined): (url: string) => boolean {
+  if (raw === undefined || raw === "") return () => false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`crashtest preload: CT_EFFECTS_IGNORE is not JSON: ${(error as Error).message}`);
+  }
+  if (!Array.isArray(parsed) || !parsed.every((glob) => typeof glob === "string")) {
+    throw new Error("crashtest preload: CT_EFFECTS_IGNORE must be a JSON array of strings");
+  }
+  return ignoreMatcher(parsed);
+}
+
 function activate(runDir: string): void {
   const ledgerFile = join(runDir, "ledger.jsonl");
   const stateFile = join(runDir, "provider-state.json");
@@ -135,6 +153,7 @@ function activate(runDir: string): void {
   const latencyMs = numberFromEnv("CT_FAKE_LATENCY_MS", 0);
   const holdMs = numberFromEnv("CT_SLOW_HOLD_MS", 2000);
   const fixtures = loadFixtures(process.env.CT_FIXTURES);
+  const ignored = loadIgnore(process.env.CT_EFFECTS_IGNORE);
 
   mkdirSync(runDir, { recursive: true });
   appendText(join(runDir, "preload.ready"), `${process.pid}\n`);
@@ -163,8 +182,9 @@ function activate(runDir: string): void {
     appendText(ledgerFile, `${JSON.stringify(entry)}\n`);
   }
 
-  function record(method: string, url: string, result: FakeResult): void {
-    appendEntry({ kind: "http", method: method.toUpperCase(), url: redactUrl(url), body: result.effect.body, status: result.status }, result.effect);
+  /** `ledgerUrl` is the redacted URL. */
+  function record(method: string, ledgerUrl: string, result: FakeResult): void {
+    appendEntry({ kind: "http", method: method.toUpperCase(), url: ledgerUrl, body: result.effect.body, status: result.status }, result.effect);
   }
 
   /** True for exactly one process of the run: the one that creates the marker. */
@@ -178,9 +198,13 @@ function activate(runDir: string): void {
     }
   }
 
-  /** The crash point's rule for any effect, HTTP or file: one that may have changed something, once per run. */
-  function crashesAfter(effect: FakeEffect): boolean {
-    return effect.mutating && (crashPoint === "post-effect-fast" || crashPoint === "post-effect-slow") && claimCrash();
+  /**
+   * The crash point's rule for any effect, HTTP or file: one that may have changed something, once per run. An effect
+   * whose ledger url `effects.ignore` matches (with the matcher detection counts with) is not the tool's and never
+   * claims it.
+   */
+  function crashesAfter(effect: FakeEffect, ledgerUrl: string): boolean {
+    return effect.mutating && !ignored(ledgerUrl) && (crashPoint === "post-effect-fast" || crashPoint === "post-effect-slow") && claimCrash();
   }
 
   /**
@@ -193,7 +217,7 @@ function activate(runDir: string): void {
     appendEntry({ kind: "fs", method: op, url: relPath, body: clip(effect.body), status: 0 }, effect);
     writeAtomically(stateFile, JSON.stringify(provider.state));
 
-    if (!crashesAfter(effect)) return;
+    if (!crashesAfter(effect, relPath)) return;
     if (crashPoint === "post-effect-slow") sleepSync(holdMs);
     process.kill(process.pid, "SIGKILL");
     sleepSync(DEATH_WAIT_MS); // the kill is asynchronous on some platforms: never go on from a dying process
@@ -210,10 +234,11 @@ function activate(runDir: string): void {
     // can never interleave their read-modify-write of the state and the ledger.
     const provider = createFakeProvider(loadState(), fixtures);
     const result = provider.handle({ method: request.method, url: request.url, headers: Object.fromEntries(request.headers), bodyText });
-    record(request.method, request.url, result);
+    const ledgerUrl = redactUrl(request.url);
+    record(request.method, ledgerUrl, result);
     writeAtomically(stateFile, JSON.stringify(provider.state));
 
-    if (crashesAfter(result.effect)) {
+    if (crashesAfter(result.effect, ledgerUrl)) {
       if (crashPoint === "post-effect-slow") await sleep(holdMs);
       process.kill(process.pid, "SIGKILL");
       await new Promise<never>(() => {}); // the kill is asynchronous on some platforms: never answer from a dying process

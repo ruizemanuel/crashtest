@@ -219,7 +219,10 @@ function prepareRunDir(runDir: string, o: RunCellOptions): string | undefined {
   return file;
 }
 
-/** The lab environment of the cell (see `preloadedLabEnv`): the config `env`, then the cell's own `CT_*`. */
+/**
+ * The lab environment of the cell (see `preloadedLabEnv`): the config `env`, then the cell's own `CT_*`. The preload
+ * gets `effects.ignore` too, so a request or file write the config says is not an effect never claims the crash point.
+ */
 function cellEnv(o: RunCellOptions, runDir: string, fixturesFile: string | undefined): Record<string, string> {
   return preloadedLabEnv(o.baseEnv ?? process.env, {
     ...o.config.env,
@@ -228,6 +231,7 @@ function cellEnv(o: RunCellOptions, runDir: string, fixturesFile: string | undef
     CT_CRASH_POINT: o.cell.point,
     CT_FAKE_LATENCY_MS: String(o.cell.latencyMs),
     CT_SLOW_HOLD_MS: String(o.cell.holdMs),
+    CT_EFFECTS_IGNORE: JSON.stringify(o.config.effects?.ignore ?? []),
     ...(fixturesFile === undefined ? {} : { CT_FIXTURES: fixturesFile }),
   });
 }

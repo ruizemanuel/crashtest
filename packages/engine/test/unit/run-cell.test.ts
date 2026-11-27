@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,17 +81,20 @@ test("answerApproval sends the approve option and reports a rejected answer with
 /**
  * A stand-in for `eve dev`: prints the ready line and serves health, session create, a stream and answers.
  * Mode "stream-gone": the stream answers 410. Mode "approval-rejected": the stream shows an open approval
- * that never settles and every answer gets a 400.
+ * that never settles and every answer gets a 400. Mode "record-env": as "stream-gone", after writing the
+ * CT_EFFECTS_IGNORE it was started with to stub-env.json in the run directory.
  */
 const STUB_EVE = `const http = require("node:http");
-const mode = require("node:fs").readFileSync("stub-mode", "utf8").trim();
+const fs = require("node:fs");
+const mode = fs.readFileSync("stub-mode", "utf8").trim();
+if (mode === "record-env") fs.writeFileSync(require("node:path").join(process.env.CT_RUN_DIR, "stub-env.json"), JSON.stringify({ ignore: process.env.CT_EFFECTS_IGNORE ?? null }));
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 const server = http.createServer((req, res) => {
   const path = new URL(req.url, "http://stub").pathname;
   if (path === "/eve/v1/health") return res.end('{"ok":true}');
   if (req.method === "POST" && path === "/eve/v1/session") return res.end('{"ok":true,"sessionId":"wrun_stub"}');
   if (path === "/eve/v1/session/wrun_stub/stream") {
-    if (mode === "stream-gone") { res.statusCode = 410; return res.end('{"error":"session_gone"}'); }
+    if (mode !== "approval-rejected") { res.statusCode = 410; return res.end('{"error":"session_gone"}'); }
     return res.end(JSON.stringify({ facts: [{ type: "interaction.opened", data: { interactionId: "req_1" } }] }) + "\\n");
   }
   if (req.method === "POST" && path === "/eve/v1/session/wrun_stub") { res.statusCode = 400; return res.end('{"error":"unknown_option"}'); }
@@ -132,6 +135,19 @@ test("runCell ends on a gone stream with the HTTP status and body instead of wai
   assert.equal(summary.turnOutcome, "stream-failed");
   assert.match(summary.error ?? "", /HTTP 410 \{"error":"session_gone"\}/);
   assert.ok(summary.wallMs < 30_000, `ended early (${summary.wallMs} ms)`);
+});
+
+test("runCell hands effects.ignore to the preloaded server as CT_EFFECTS_IGNORE", async (t) => {
+  const seen = async (config: Parameters<typeof runCell>[0]["config"]): Promise<unknown> => {
+    const summary = await runCell({ ...stubCell(stubLab(t, "record-env"), 60_000), config });
+    assert.equal(summary.turnOutcome, "stream-failed", summary.error);
+    return JSON.parse(readFileSync(join(summary.runDir, "stub-env.json"), "utf8"));
+  };
+  assert.deepEqual(await seen({ effects: { ignore: ["https://api.vercel.com/v1/connect/*", ".next/*"] } }), {
+    ignore: JSON.stringify(["https://api.vercel.com/v1/connect/*", ".next/*"]),
+  });
+  // Always set, so a CT_EFFECTS_IGNORE that the config's `env` names cannot stand in for the ignore list.
+  assert.deepEqual(await seen({ env: { CT_EFFECTS_IGNORE: JSON.stringify(["*"]) } }), { ignore: "[]" });
 });
 
 test("runCell reports the last rejected approval answer when the turn does not settle", async (t) => {
