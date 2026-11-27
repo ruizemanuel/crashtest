@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { loadConfig, sessionAuthFor, type CrashtestConfig } from "../../src/config.ts";
 import { ConfigError } from "../../src/errors.ts";
 
@@ -179,6 +180,14 @@ test("a malformed session identity names the key", () => {
       );
     });
   }
+});
+
+test("the README's example configuration is valid", () => {
+  const readme = readFileSync(fileURLToPath(new URL("../../README.md", import.meta.url)), "utf8");
+  // The first JSON block under the heading; a Windows checkout may have CRLF line ends.
+  const example = /\n## Configuration\r?\n[\s\S]*?```json\r?\n([\s\S]*?)\r?\n```/.exec(readme)?.[1];
+  assert.ok(example !== undefined, "README has no JSON example under Configuration");
+  withApp(example, (dir) => assert.deepEqual(loadConfig(dir), JSON.parse(example)));
 });
 
 test("sessionAuthFor prefers the tool's own identity and ignores inherited keys", () => {

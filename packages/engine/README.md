@@ -374,7 +374,13 @@ silently weaken the test.
   "effects": { "ignore": ["https://telemetry.acme.test/*"] },
   "waivers": { "post_note": "Internal notes; a duplicate is harmless." },
   "tools": { "exclude": ["legacy_sync"] },
-  "auth": { "authenticator": "slack-webhook", "principalType": "user", "principalId": "U0CRASHTEST", "attributes": { "team_id": "T0CRASHTEST" } }
+  "auth": {
+    "authenticator": "slack-webhook",
+    "issuer": "slack:T0CRASHTEST",
+    "principalType": "user",
+    "principalId": "slack:T0CRASHTEST:U0CRASHTEST",
+    "attributes": { "author_type": "user", "channel_id": "C0CRASHTEST", "team_id": "T0CRASHTEST", "user_id": "U0CRASHTEST" }
+  }
 }
 ```
 
@@ -387,7 +393,7 @@ silently weaken the test.
 | `effects.ignore` | `string[]` | Request URLs, or lab-relative file paths such as `data/cache/*`, that are not effects of the tool, with the same `*` rule, matched against the full URL as the ledger records it (secrets in the query or path redacted) or the path. An ignored request or write stays in the ledger, but it is not counted and never triggers a cell's crash point: the crash comes after the next effect that is not ignored. |
 | `waivers` | `{ "<tool>": string }` | The tool is still tested and rated, and the report shows the reason, but the agent rating leaves it out. |
 | `tools.exclude` | `string[]` | Tools that are not run. `plan` lists them as skipped; the report leaves them out entirely (they do not count in "N of M tools evaluated"). |
-| `auth`, `scenarios.<tool>.auth` | `{ "authenticator": string, "principalId": string, "principalType": string, "attributes"?: { "<name>": string \| string[] }, "issuer"?: string, "subject"?: string }` | The caller identity the lab session gets, as a tool reads it from `ctx.session.auth.current`, for tools that check who is calling (a Slack team, a GitHub installation). `scenarios.<tool>.auth` applies to that tool and wins over the top-level `auth`. The first three fields must be non-empty; `attributes` defaults to `{}`. Without either key, the session gets eve's local development caller. Whatever the identity, the lab channel accepts only local callers. |
+| `auth`, `scenarios.<tool>.auth` | `{ "authenticator": string, "principalId": string, "principalType": string, "attributes"?: { "<name>": string \| string[] }, "issuer"?: string, "subject"?: string }` | The caller identity the lab session gets, as a tool reads it from `ctx.session.auth.current`, for tools that check who is calling (a Slack team, a GitHub installation). Copy the shape of the identity that the tool's channel produces: the example has the shape of the identity eve's Slack channel gives a message from a person (`issuer` `slack:<team>`, `principalId` `slack:<team>:<user>`, the user in `attributes.user_id`). A tool that returns its refusal instead of throwing it shows up as not evaluated, with no external effect. `scenarios.<tool>.auth` applies to that tool and wins over the top-level `auth`. The first three fields must be non-empty; `attributes` defaults to `{}`. Without either key, the session gets eve's local development caller. Whatever the identity, the lab channel accepts only local callers. |
 
 ## Limits
 
