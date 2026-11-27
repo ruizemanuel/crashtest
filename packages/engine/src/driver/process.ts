@@ -69,9 +69,12 @@ export function spawnTracked(cmd: string, args: string[], opts: SpawnOptions): C
 
 /**
  * SIGKILL the child and everything it spawned. No-op for a child that never started.
- * On POSIX the whole process group is signalled even when the leader already exited: in a crash
- * cell the leader can die while a worker it started survives in its group. On Windows `taskkill /T`
- * needs a live leader to find the tree, so an exited child is skipped (callers back it up with `killPort`).
+ * On POSIX the child's process group is signalled even when the leader already exited: in a crash
+ * cell the leader can die while a worker it started survives in its group. Descendants that lead a
+ * group of their own are signalled first, by group: eve dev forks its server detached, and a server
+ * that outlives the CLI stops listening (so `killPort` misses it) and keeps writing into the lab.
+ * On Windows `taskkill /T` needs a live leader to find the tree, so an exited child is skipped
+ * (callers back it up with `killPort`).
  */
 export function killTree(child: ChildProcess): void {
   if (child.pid === undefined) return;
@@ -80,11 +83,43 @@ export function killTree(child: ChildProcess): void {
     spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true });
     return;
   }
-  try {
-    process.kill(-child.pid, "SIGKILL");
-  } catch {
-    // ESRCH: the group is already empty
+  for (const group of [...descendantGroups(child.pid), child.pid]) {
+    try {
+      process.kill(-group, "SIGKILL");
+    } catch {
+      // ESRCH: the group is already empty
+    }
   }
+}
+
+/**
+ * The process groups of the live descendants of `pid`, read from `ps` before anything is killed (a dead parent's
+ * children are reparented and can no longer be found). Never this process's own group or `pid`'s own; empty when
+ * `ps` cannot run.
+ */
+function descendantGroups(pid: number): number[] {
+  const ps = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8" });
+  if (ps.error || ps.status !== 0) return [];
+  const childrenOf = new Map<number, number[]>();
+  const groupOf = new Map<number, number>();
+  for (const line of ps.stdout.split("\n")) {
+    const [proc, parent, group] = line.trim().split(/\s+/).map(Number);
+    if (proc === undefined || parent === undefined || group === undefined || ![proc, parent, group].every(Number.isInteger)) continue;
+    groupOf.set(proc, group);
+    childrenOf.set(parent, [...(childrenOf.get(parent) ?? []), proc]);
+  }
+  const skip = new Set([groupOf.get(process.pid), pid, 0, 1]);
+  const groups = new Set<number>();
+  const seen = new Set<number>();
+  const queue = [...(childrenOf.get(pid) ?? [])];
+  for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
+    if (seen.has(next)) continue;
+    seen.add(next);
+    const group = groupOf.get(next);
+    if (group !== undefined && !skip.has(group)) groups.add(group);
+    queue.push(...(childrenOf.get(next) ?? []));
+  }
+  return [...groups];
 }
 
 /** Last-resort cleanup (exit and signal handlers): kill every child still running. */

@@ -123,6 +123,52 @@ test(
   },
 );
 
+test(
+  "killTree reaches a descendant that leads its own process group before it can react (POSIX)",
+  { skip: process.platform === "win32" ? "process groups are POSIX only; taskkill /T walks the tree on Windows" : false },
+  async () => {
+    // eve dev forks its server detached: the server leads a group of its own, and when the CLI dies it sees the IPC
+    // channel close, stops listening and keeps writing into the app's .eve/ for a while. It must die with the CLI.
+    const dir = mkdtempSync(join(tmpdir(), "ct-killtree-"));
+    const marker = join(dir, "written-after-disconnect");
+    const serverScript = [
+      'const { writeFileSync } = require("node:fs");',
+      'process.on("disconnect", () => setTimeout(() => { writeFileSync(process.argv[1], "late"); process.exit(0); }, 300));',
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const leaderScript = [
+      'const { spawn } = require("node:child_process");',
+      `const server = spawn(process.execPath, ["-e", ${JSON.stringify(serverScript)}, ${JSON.stringify(marker)}], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });`,
+      "process.stdout.write(String(server.pid) + \"\\n\");",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const leader = spawnTracked(process.execPath, ["-e", leaderScript], { stdio: ["ignore", "pipe", "ignore"] });
+    const server = await new Promise<number>((resolve, reject) => {
+      let out = "";
+      leader.stdout!.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+        if (out.includes("\n")) resolve(Number(out.trim()));
+      });
+      leader.once("exit", () => reject(new Error(`the leader exited before it printed the server pid: ${JSON.stringify(out)}`)));
+    });
+    try {
+      assert.ok(Number.isInteger(server) && server > 0 && alive(server), `the server is running: ${server}`);
+      killTree(leader);
+      assert.ok(await goneWithin(server, 5000), "killTree killed the server in its own process group");
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      assert.ok(!existsSync(marker), "the server wrote nothing after the leader died");
+    } finally {
+      try {
+        process.kill(server, "SIGKILL");
+      } catch {
+        // already gone
+      }
+      killTree(leader);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("killAllTracked and killTree ignore children that already exited", async () => {
   const child = spawnTracked(process.execPath, ["-e", ""], { stdio: "ignore" });
   try {
