@@ -1,22 +1,20 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { cpSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
-import { test, type TestContext } from "node:test";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { FixOutcome, Strategy } from "../../src/fix/fix.ts";
 import type { Report, Stars } from "../../src/types.ts";
-import { hashTree } from "./helpers.ts";
+import { cli, hashTree } from "./helpers.ts";
 
 // The demo contract of the reference agent `examples/acme-support`: `crashtest run` rates it 1 star, `crashtest fix
 // --all --apply` patches every tool rated below 5 stars, and a second `run` rates every evaluated tool 5 stars. It
 // works on a copy inside the example's `.crashtest/`, which git ignores: the report then records the repository's
 // commit with a clean tree, so `fix` takes its before ratings from it, and the example itself stays unprotected.
 // 18 lanes (about 115 runs, each a full `eve dev` life): about 25 minutes on one machine. The CLI runs as a child
-// process, as in cli.test.ts.
+// process (see `cli`).
 const E2E = { timeout: 3_600_000 };
 const here = dirname(fileURLToPath(import.meta.url));
-const cliPath = join(here, "..", "..", "src", "cli.ts");
 const acmeDir = join(here, "..", "..", "..", "..", "examples", "acme-support");
 const copyDir = join(acmeDir, ".crashtest", "e2e-copy");
 const outDir = join(copyDir, ".crashtest");
@@ -39,29 +37,6 @@ const CHOSEN: Record<string, Strategy> = {
   upload_receipt: "ledger-guard",
 };
 const AFTER: Record<string, Stars | null> = { ...BEFORE, refund_payment: 5, post_slack_update: 5, send_email: 5, upload_receipt: 5 };
-
-interface CliRun {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-/** Runs `crashtest <argv>` to its exit; its stderr (the progress) is replayed as diagnostics. */
-function cli(t: TestContext, argv: string[]): Promise<CliRun> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...argv], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("close", (code, signal) => {
-      for (const line of stderr.split(/\r?\n/).filter(Boolean)) t.diagnostic(line);
-      if (code === null) reject(new Error(`crashtest ${argv.join(" ")} was killed by ${signal}:\n${stderr}`));
-      else resolve({ code, stdout, stderr });
-    });
-  });
-}
 
 /** A fresh copy of the example's own files at `copyDir`. */
 function freshCopy(): void {

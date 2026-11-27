@@ -3,46 +3,20 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test, type TestContext } from "node:test";
+import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 import { killPort, listenerPids } from "../../src/driver/ports.ts";
 import { CORE_CELLS } from "../../src/matrix.ts";
 import { renderBadge } from "../../src/report/badge.ts";
 import { commitLabel } from "../../src/report/format.ts";
 import type { Report } from "../../src/types.ts";
-import { zooDir } from "./helpers.ts";
+import { cli, cliPath, zooDir } from "./helpers.ts";
 
-// Every test here drives the `crashtest` bin end to end on the zoo; `run` makes real lanes, each cell a full
-// `eve dev` life. The CLI runs as a child process: capturing this process's stdout instead would also swallow the
-// test runner's own reporting, which shares that stream.
+// Every test here drives the `crashtest` bin end to end on the zoo, as a child process (see `cli`); `run` makes
+// real lanes, each cell a full `eve dev` life.
 const E2E = { timeout: 900_000 };
 const outDir = join(zooDir, ".crashtest");
-const cliPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "cli.ts");
 const BANNED = /\b(verified|safe)\b/i;
-
-interface CliRun {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-/** Runs `crashtest <argv>` to its exit; its stderr (the progress) is replayed as diagnostics. */
-function cli(t: TestContext, argv: string[], cwd?: string): Promise<CliRun> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...argv], { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("close", (code, signal) => {
-      for (const line of stderr.split(/\r?\n/).filter(Boolean)) t.diagnostic(line);
-      if (code === null) reject(new Error(`crashtest ${argv.join(" ")} was killed by ${signal}:\n${stderr}`));
-      else resolve({ code, stdout, stderr });
-    });
-  });
-}
 
 function removeReports(): void {
   for (const file of ["report.json", "report.md", "badge.svg"]) rmSync(join(outDir, file), { force: true });
