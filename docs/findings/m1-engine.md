@@ -6,7 +6,7 @@ used):
 - **The replay assumptions hold** with eve 1.5.0: in the stable cell both effects carry the same call id
   (`mock-tool-call-1-0-1-1`), and the post-effect-slow retry runs in the same turn (`turn_0`), in 6 of 6 runs of
   each cell.
-- **The zoo rates every tool as designed**: 10 tools, 1 to 5 stars plus one not evaluated, 73 runs, 929.8 s of
+- **The zoo rates every tool as intended**: 10 tools, 1 to 5 stars plus one not evaluated, 73 runs, 929.8 s of
   lane time on one machine.
 - **Framework startup creates no effects**: across 75 zoo run directories and the discovery run (259 ledger
   entries) every entry that a tool did not make is eve's non-mutating model-catalog GET; eve's own file writes stay
@@ -237,9 +237,10 @@ The reference agent `examples/acme-support` (six tools, eve 1.5.0) through the d
 `acme: 1 star to 5 stars` (`test/e2e/acme.test.ts`), which drives the CLI on a fresh copy of the example at
 `examples/acme-support/.crashtest/e2e-copy`. Git ignores that directory, so the first report records commit
 `7ac9f32` with a clean tree, `fix` takes its before ratings from that report instead of running new lanes, and the
-example itself stays unprotected. Windows 10, Node 24.15.0, scripted mock model and fake provider: no tokens were
-spent and no request left the machine. The test ran twice with the same verdicts in every cell; the first run failed
-only its last check (see the notes below).
+example itself stays unprotected. `7ac9f32` does not contain the example, but the engine and its templates at
+`7ac9f32` are unchanged through `dd200c3`, the commit that adds the example. Windows 10, Node 24.15.0, scripted mock
+model and fake provider: no tokens were spent and no request left the machine. The test ran twice with the same
+verdicts in every cell.
 
 ### Before and after
 
@@ -307,10 +308,3 @@ The candidate lanes of run 2: `refund_payment` upstream-key 6 runs, 74.2 s, and 
 `post_slack_update` ledger-guard 6 runs, 78.6 s; `send_email` upstream-key 9 runs, 122.4 s, and ledger-guard 6 runs,
 70.8 s; `upload_receipt` ledger-guard 6 runs, 71.7 s. The `fix` wall time also covers discovery for every tool and
 for every patched lab. Both runs gave the same verdict in every cell of every lane.
-
-### Notes
-
-- The first run of the test failed only its last check, that the example's own files did not change. The example's
-  README had been written into the example while the test ran, after the test had hashed the example. `fix` had
-  written its patches into the copy only: the example's tool files were unchanged and it had no `agent/lib/`. The
-  second run passed.
