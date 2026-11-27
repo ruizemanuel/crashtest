@@ -73,6 +73,13 @@ test("zoo: benign_labels rates 5 stars with benign repeats", E2E, async (t) => {
   assert.equal(result.rating.benignRepeats, true, detail);
 });
 
+test("zoo: put_timestamped rates 5 stars with benign repeats", E2E, async (t) => {
+  const { result, detail } = await lane(t, "put_timestamped");
+  assert.equal(result.rating.stars, 5, detail);
+  assert.equal(result.rating.benignRepeats, true, detail);
+  assert.match(result.rating.summary, /differed only in `updatedAt`/, detail);
+});
+
 test("zoo: check_before_act rates 5 stars", E2E, async (t) => {
   const { result, detail } = await lane(t, "check_before_act");
   assert.equal(result.rating.stars, 5, detail);

@@ -24,6 +24,8 @@ export interface Outcome {
   body: unknown;
   stateChange: boolean;
   benign?: string;
+  /** The object the write targets, as the provider identifies it (see `FakeEffect.object`). */
+  object?: string;
 }
 
 /** The hosts whose real behavior the fake provider models (see `handleCatalog`). */

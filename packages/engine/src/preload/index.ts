@@ -172,6 +172,7 @@ function activate(runDir: string): void {
       method: what.method,
       url: what.url,
       endpoint: effect.endpoint,
+      ...(effect.object === undefined ? {} : { object: effect.object }),
       mutating: effect.mutating,
       stateChange: effect.stateChange,
       ...(effect.benign === undefined ? {} : { benign: effect.benign }),

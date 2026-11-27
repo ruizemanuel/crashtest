@@ -160,8 +160,13 @@ export function rateTool(o: RateInput): ToolRating {
   if (!benignRepeats) {
     return { ...base, stars: 5, summary: "One state change in every cell, and the model always got a truthful result.", recommendation: "No change needed." };
   }
-  const summary = `One state change in every cell; repeated requests did not change provider state.${assumedKeyNote(evaluable)}`;
+  const summary = `One state change in every cell; repeated requests did not change provider state.${assumedKeyNote(evaluable)}${maskedNote(evaluable)}`;
   return { ...base, stars: 5, summary, recommendation: "Idempotent by nature: no change needed." };
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function namedList(names: string[]): string {
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 /** What a rating that rests on idempotency keys sent to hosts the fake provider does not model must say. */
@@ -171,8 +176,15 @@ function assumedKeyNote(cells: CellVerdict[]): string {
   if (hosts.length === 1) {
     return ` The repeats to ${hosts[0]} reused an idempotency key, which that host is assumed to honor: the fake provider does not model it.`;
   }
-  const named = `${hosts.slice(0, -1).join(", ")} and ${hosts.at(-1)}`;
-  return ` The repeats to ${named} reused an idempotency key, which those hosts are assumed to honor: the fake provider does not model them.`;
+  return ` The repeats to ${namedList(hosts)} reused an idempotency key, which those hosts are assumed to honor: the fake provider does not model them.`;
+}
+
+/** What a rating that rests on repeated writes counted as benign because they changed only varying fields must say. */
+function maskedNote(cells: CellVerdict[]): string {
+  const fields = [...new Set(cells.flatMap((cell) => cell.maskedFields ?? []))].sort();
+  if (fields.length === 0) return "";
+  const named = namedList(fields.map((field) => `\`${field}\``));
+  return ` A repeated write went to the same object and differed only in ${named}, which vary between the baselines; the lab assumes the service overwrites the object.`;
 }
 
 /**

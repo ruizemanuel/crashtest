@@ -111,6 +111,20 @@ test("5 stars that rest on key replays to a host outside the catalog say the key
   assert.match(one.summary, / The repeats to api\.acme\.test reused an idempotency key, which that host is assumed to honor: the fake provider does not model it\.$/);
 });
 
+test("the summary names the fields that were left out", () => {
+  const rating = rate([
+    verdict({ benignRepeats: 1, maskedFields: ["id", "sentAt"] }),
+    verdict({ cellId: "post-effect-slow", benignRepeats: 1, maskedFields: ["sentAt"] }),
+    verdict({ cellId: "post-settle" }),
+  ]);
+  assert.equal(rating.stars, 5);
+  assert.equal(rating.benignRepeats, true);
+  assert.equal(
+    rating.summary,
+    "One state change in every cell; repeated requests did not change provider state. A repeated write went to the same object and differed only in `id` and `sentAt`, which vary between the baselines; the lab assumes the service overwrites the object.",
+  );
+});
+
 // --- invalid cells --------------------------------------------------------------------------------------------
 
 const invalidCell = (cellId: CellVerdict["cellId"], invalidReason = "crash-not-triggered"): CellVerdict => verdict({ cellId, kind: "invalid", invalidReason });
@@ -275,6 +289,7 @@ test("user-facing copy never claims a tool is verified or safe", () => {
     rate([lost]),
     rate(CLEAN),
     rate([verdict({ benignRepeats: 2 })]),
+    rate([verdict({ benignRepeats: 1, maskedFields: ["updatedAt"], assumedKeyHosts: ["api.acme.test"] })]),
     rate([], {}),
   ];
   for (const rating of all) assert.doesNotMatch(`${rating.summary} ${rating.recommendation}`, /verified|safe/i);

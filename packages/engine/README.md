@@ -252,6 +252,11 @@ next command replaces it.
   lab-fix-<strategy>/             the patched lab copy of a fix candidate, while the candidate is tried
 ```
 
+A run directory holds the fake provider's view: `ledger.jsonl` records each request and file write as the provider
+answered it, and the effect count in a baseline's progress line counts its state changes the same way. A repeated
+write that differs only in fields varying between the baselines (see [Cells](#cells)) is still a state change there.
+The verdicts, the counts in the crash cells' progress lines and the report count it as a benign repeat.
+
 crashtest writes `.crashtest/.gitignore`, which ignores `lab/`, `lab-*/` and `runs/`, so the report and the badge
 can be committed.
 
@@ -317,7 +322,10 @@ too, counted per file (`WRITE data/state.json`, `APPEND data/outbox.jsonl`): an 
 write that puts in a file the content it already has is a benign repeat. For Stripe, Slack, Resend and GitHub
 the fake provider keeps state, so a repeat that changes nothing (adding a label that is already there) is a
 benign repeat and does not lower the rating. For other hosts every POST counts, and a PUT, PATCH or DELETE repeated
-with the same body is benign.
+with the same body is benign. A PUT or DELETE that writes the same object again (the same method, host and path,
+without the query) is benign too when its body differs from the earlier write only in fields that the two baselines
+show as varying on that endpoint, such as an `updatedAt` timestamp: the lab assumes the service overwrites the
+object. A 5-star summary that rests on such a repeat names those fields.
 
 Some requests are reads that providers receive as POST, which are not effects: the Slack Web API read methods
 (`conversations.history`, `conversations.replies`, `conversations.info`, `conversations.list`,

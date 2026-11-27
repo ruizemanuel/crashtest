@@ -19,6 +19,11 @@ export interface FakeEffect {
   stateChange: boolean;
   benign?: string;
   endpoint: string;
+  /**
+   * The object the write targets, as the provider identifies it: for a generic PUT, PATCH or DELETE, the method and
+   * the redacted `<host><path>` without the query. Detection treats two writes to one object as a possible repeat.
+   */
+  object?: string;
   idempotencyKey?: string;
   /** Redacted. */
   body: unknown;
@@ -106,8 +111,14 @@ function parseUrl(url: string): URL | null {
   }
 }
 
-function withBenign(effect: FakeEffect, benign: string | undefined): FakeEffect {
-  return benign === undefined ? effect : { ...effect, benign };
+/** The effect as a handler's outcome leaves it: its state change, plus the benign label and the object when it has them. */
+function settledBy(effect: FakeEffect, outcome: Outcome): FakeEffect {
+  return {
+    ...effect,
+    stateChange: outcome.stateChange,
+    ...(outcome.benign === undefined ? {} : { benign: outcome.benign }),
+    ...(outcome.object === undefined ? {} : { object: outcome.object }),
+  };
 }
 
 export function createFakeProvider(state: ProviderState | null, fixtures: Fixture[] = []): FakeProvider {
@@ -127,15 +138,16 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
       append(store, req.key, req.redactedBody);
       return { status: 200, body: { ok: true, id: nextId(store, "generic", "ct_") }, stateChange: true };
     }
+    // The slot is also the object the write targets.
     const slot = `${req.method} ${req.key}`;
     const seen = own(store.putHashes, slot);
     if (req.method === "PUT" && req.headers["if-none-match"]?.trim() === "*" && seen !== undefined) {
-      return { status: 412, body: { error: "precondition_failed" }, stateChange: false };
+      return { status: 412, body: { error: "precondition_failed" }, stateChange: false, object: slot };
     }
     const hash = bodyHash(req.body);
-    if (seen?.includes(hash)) return { status: 200, body: { ok: true }, stateChange: false, benign: "same request repeated" };
+    if (seen?.includes(hash)) return { status: 200, body: { ok: true }, stateChange: false, benign: "same request repeated", object: slot };
     (store.putHashes[slot] ??= []).push(hash);
-    return { status: 200, body: { ok: true }, stateChange: true };
+    return { status: 200, body: { ok: true }, stateChange: true, object: slot };
   }
 
   function handle(req: FakeRequest): FakeResult {
@@ -173,7 +185,7 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
     };
     const answer = (): FakeResult => {
       const outcome = knownRead ? answerKnownRead(request, store) : (handleCatalog(request, store) ?? generic(request));
-      return respond(outcome.status, outcome.body, withBenign({ ...effect, stateChange: outcome.stateChange }, outcome.benign));
+      return respond(outcome.status, outcome.body, settledBy(effect, outcome));
     };
     // A key counts only where the real service honors it. Slack and GitHub ignore the header, so a repeat there is a
     // real second effect; a host outside the catalog is assumed to honor it (detection names those hosts). A known

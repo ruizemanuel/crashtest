@@ -7,8 +7,22 @@ import { KEY_REPLAY } from "./preload/fake-provider.ts";
 import type { Cell, CellVerdict, EffectEvidence, LedgerEntry, NaReason, RunSummary, StreamCall } from "./types.ts";
 
 export type BaselineFacts =
-  | { ok: true; expected: Record<string, number>; volatileFields: string[]; approval: boolean }
+  | {
+      ok: true;
+      expected: Record<string, number>;
+      /** The sorted union of `volatileByEndpoint`, for the evidence display. */
+      volatileFields: string[];
+      /** Per endpoint, the body fields that differ between the two baselines. */
+      volatileByEndpoint: Record<string, string[]>;
+      approval: boolean;
+    }
   | { ok: false; reason: NaReason; detail: string };
+
+/** The benign label of a repeated write to one object whose body differs only in fields that vary between the baselines. */
+export const MASKED_REPEAT = "same object written again; only fields that vary between the baselines differ";
+
+/** The methods whose repeat to one object overwrites it rather than adding to it. */
+const OVERWRITES = new Set(["PUT", "DELETE"]);
 
 /** What the model is told when an interrupted call may or may not have taken effect, as eve words it. */
 const UNCERTAIN = /OUTCOME_UNKNOWN|TOOL_RECOVERY_REQUIRED/;
@@ -70,6 +84,63 @@ function differingKeys(first: unknown, second: unknown): string[] {
   if (!isRecord(first) || !isRecord(second)) return [];
   const keys = new Set([...Object.keys(first), ...Object.keys(second)]);
   return [...keys].filter((key) => canonical(first[key]) !== canonical(second[key]));
+}
+
+/** The distinct values, sorted. */
+function sortedUnique(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort();
+}
+
+/**
+ * The body fields that vary on their own, per endpoint: the sorted top-level keys that differ between the n-th
+ * entry of the endpoint in one baseline and the n-th in the other. Endpoints where no key differs are left out.
+ */
+export function volatileFieldsOf(first: LedgerEntry[], second: LedgerEntry[]): Record<string, string[]> {
+  const others = groupByEndpoint(second);
+  const volatile = new Map<string, string[]>();
+  for (const [endpoint, entries] of groupByEndpoint(first)) {
+    const partners = others.get(endpoint) ?? [];
+    const keys = entries.flatMap((entry, index) => {
+      const partner = partners[index];
+      return partner === undefined ? [] : differingKeys(entry.body, partner.body);
+    });
+    if (keys.length > 0) volatile.set(endpoint, sortedUnique(keys));
+  }
+  return Object.fromEntries(volatile);
+}
+
+/** The object an entry writes: the provider's name for it, else its method and URL. */
+function objectOf(entry: LedgerEntry): string {
+  return entry.object ?? `${entry.method} ${entry.url}`;
+}
+
+/** A body without the `skip` keys; a body that is not an object stays whole. */
+function withoutKeys(body: unknown, skip: readonly string[]): unknown {
+  if (!isRecord(body)) return body;
+  return Object.fromEntries(Object.entries(body).filter(([key]) => !skip.includes(key)));
+}
+
+/**
+ * The entries with every repeated write to one object that changed only fields varying between the baselines
+ * turned into a benign repeat (`MASKED_REPEAT`): an HTTP PUT or DELETE that changed state, after an earlier entry
+ * to the same object whose body is the same once the endpoint's `volatile` keys are left out of both. The order is
+ * kept and the input is not mutated. `maskedFields` lists the volatile keys whose values did differ in those pairs.
+ */
+export function maskRepeats(entries: LedgerEntry[], volatile: Record<string, string[]>): { entries: LedgerEntry[]; maskedFields: string[] } {
+  const maskedFields: string[] = [];
+  const masked = entries.map((entry, index) => {
+    if (entry.kind !== "http" || !entry.stateChange || !OVERWRITES.has(entry.method)) return entry;
+    const skip = Object.hasOwn(volatile, entry.endpoint) ? (volatile[entry.endpoint] ?? []) : [];
+    const object = objectOf(entry);
+    const body = canonical(withoutKeys(entry.body, skip));
+    const earlier = entries
+      .slice(0, index)
+      .findLast((candidate) => objectOf(candidate) === object && canonical(withoutKeys(candidate.body, skip)) === body);
+    if (earlier === undefined) return entry;
+    maskedFields.push(...differingKeys(earlier.body, entry.body));
+    return { ...entry, stateChange: false, benign: MASKED_REPEAT };
+  });
+  return { entries: masked, maskedFields: sortedUnique(maskedFields) };
 }
 
 // --- calls ----------------------------------------------------------------------------------------------------
@@ -155,7 +226,8 @@ function sameCounts(a: Map<string, number>, b: Map<string, number>): boolean {
 /**
  * What two undisturbed runs of `tool` agree on: the state changes per endpoint every later cell is measured
  * against, the body fields that vary on their own, and whether the tool needed approval. Disagreeing or
- * missing facts say why the tool cannot be rated.
+ * missing facts say why the tool cannot be rated. The state changes are counted after `maskRepeats`, as in a cell,
+ * so a tool that rewrites its own object within one turn is measured the same way in both.
  */
 export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, config: CrashtestConfig): BaselineFacts {
   for (const run of [b1, b2]) {
@@ -164,8 +236,9 @@ export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, conf
   }
   const first = mutatingEntries(b1, config);
   const second = mutatingEntries(b2, config);
-  const counts1 = stateChangeCounts(first);
-  const counts2 = stateChangeCounts(second);
+  const volatileByEndpoint = volatileFieldsOf(first, second);
+  const counts1 = stateChangeCounts(maskRepeats(first, volatileByEndpoint).entries);
+  const counts2 = stateChangeCounts(maskRepeats(second, volatileByEndpoint).entries);
   if (!sameCounts(counts1, counts2)) {
     return {
       ok: false,
@@ -179,7 +252,8 @@ export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, conf
   return {
     ok: true,
     expected: Object.fromEntries(counts1),
-    volatileFields: differingKeys(first[0]?.body, second[0]?.body),
+    volatileFields: sortedUnique(Object.values(volatileByEndpoint).flat()),
+    volatileByEndpoint,
     approval: b1.approvals > 0,
   };
 }
@@ -218,12 +292,13 @@ function evidenceFor(
 
 /**
  * Judges one run of a cell against the baseline facts. `attempts` is 1: the lane that repeats cells fills in
- * `attempts` and `seen`.
+ * `attempts` and `seen`. The ledger is read after `maskRepeats`: a repeated write that changed only fields varying
+ * between the baselines is a benign repeat, not a state change.
  */
 export function analyzeCell(
   cell: Cell,
   run: RunSummary,
-  base: { expected: Record<string, number>; volatileFields: string[] },
+  base: { expected: Record<string, number>; volatileFields: string[]; volatileByEndpoint: Record<string, string[]> },
   config: CrashtestConfig,
 ): CellVerdict {
   const calls = callsTo(run);
@@ -231,7 +306,7 @@ export function analyzeCell(
     cell.point === "none" ? "none" : calls.some((candidate) => candidate.outcome === "abandoned") ? "interrupted" : "replayed";
   const { outcome, error } = outcomeOf(calls);
 
-  const mutating = mutatingEntries(run, config);
+  const { entries: mutating, maskedFields } = maskRepeats(mutatingEntries(run, config), base.volatileByEndpoint);
   const counts = stateChangeCounts(mutating);
   const evidence = evidenceFor(groupByEndpoint(mutating), counts, base.expected, new Set([...base.volatileFields, "callId"]));
   const stateChanges = sum(counts.values());
@@ -263,5 +338,6 @@ export function analyzeCell(
     ...(error !== undefined ? { error } : {}),
     evidence,
     ...(assumedKeyHosts.length > 0 ? { assumedKeyHosts } : {}),
+    ...(maskedFields.length > 0 ? { maskedFields } : {}),
   };
 }

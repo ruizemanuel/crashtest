@@ -419,6 +419,14 @@ test("generic PUT, PATCH and DELETE change state only for a (method, path, body)
   expectEffect(p.handle(req("PUT", url, { a: 2 })), { status: 200, stateChange: true, endpoint: "PUT api.acme.test/v1/things/:id" });
 });
 
+test("a generic PUT names its object", () => {
+  const p = createFakeProvider(null);
+  for (const url of ["https://api.acme-store.test/v1/profiles/42", "https://api.acme-store.test/v1/profiles/42?expand=address"]) {
+    const put = p.handle(req("PUT", url, { name: "Ada" }));
+    assert.equal(put.effect.object, "PUT api.acme-store.test/v1/profiles/42", url);
+  }
+});
+
 test("generic GET and HEAD return the bodies POSTed to the path, or {}", () => {
   const p = createFakeProvider(null);
   const url = "https://api.acme.test/v1/orders";

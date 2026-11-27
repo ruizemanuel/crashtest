@@ -9,6 +9,7 @@ export interface LedgerEntry {
   method: string;            // HTTP method, or "WRITE" | "APPEND"
   url: string;               // full URL, or lab-relative posix path
   endpoint: string;          // "POST api.stripe.com/v1/refunds", "APPEND data/outbox.jsonl"
+  object?: string;           // the object a write targets, as the provider identifies it: "PUT api.acme.test/v1/things/42"
   mutating: boolean; stateChange: boolean; benign?: string;
   idempotencyKey?: string; body: unknown; status: number;
 }
@@ -29,6 +30,11 @@ export interface CellVerdict {
   invalidReason?: string; error?: string; evidence: EffectEvidence[];
   /** Hosts outside the fake provider's catalog whose idempotency-key replays count as benign only by assumption. */
   assumedKeyHosts?: string[];
+  /**
+   * Body fields that vary between the baselines and were the only difference of a repeated write to the same object,
+   * which therefore counted as a benign repeat.
+   */
+  maskedFields?: string[];
 }
 export type NaReason = "no-effect" | "baseline-failed" | "baseline-unstable" | "cells-invalid" | "not-discovered";
 export type Stars = 1 | 2 | 3 | 4 | 5;

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { analyzeCell, baselineFacts } from "../../src/detect.ts";
+import { MASKED_REPEAT, analyzeCell, baselineFacts, maskRepeats, volatileFieldsOf } from "../../src/detect.ts";
 import { CORE_CELLS, cellLabel, crashCells } from "../../src/matrix.ts";
-import type { Cell, CellId } from "../../src/types.ts";
+import { KEY_REPLAY } from "../../src/preload/fake-provider.ts";
+import type { Cell, CellId, LedgerEntry } from "../../src/types.ts";
 import { REFUNDS, REFUNDS_URL, call, catalogEntry, entry, summary } from "./builders.ts";
 
 function cellOf(id: CellId): Cell {
@@ -11,7 +12,7 @@ function cellOf(id: CellId): Cell {
   return cell;
 }
 
-const ONE_REFUND = { expected: { [REFUNDS]: 1 }, volatileFields: [] as string[] };
+const ONE_REFUND = { expected: { [REFUNDS]: 1 }, volatileFields: [] as string[], volatileByEndpoint: {} };
 
 /** A crash-cell run that reached its crash point (marker set, killed by the crash point). */
 function crashRun(partial: Parameters<typeof summary>[0] = {}): ReturnType<typeof summary> {
@@ -168,7 +169,7 @@ test("analyzeCell counts benign repeats only among mutating entries", () => {
 
 test("analyzeCell names the hosts outside the catalog whose key replays it counted as benign", () => {
   const acme = { url: "https://api.acme.test:8443/v1/m", endpoint: "POST api.acme.test:8443/v1/m" };
-  const base = { expected: { [REFUNDS]: 1, [acme.endpoint]: 1 }, volatileFields: [] as string[] };
+  const base = { expected: { [REFUNDS]: 1, [acme.endpoint]: 1 }, volatileFields: [] as string[], volatileByEndpoint: {} };
   const replay = { stateChange: false, benign: "idempotency key replay", idempotencyKey: "k1" };
   const ledger = [entry(), entry(replay), entry(acme), entry({ ...acme, ...replay }), entry({ ...acme, ...replay })];
   const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger }), base, {});
@@ -261,7 +262,7 @@ test("effects.ignore globs are anchored and escape regex characters", () => {
 test("analyzeCell lists the body fields that differ, minus volatile fields and callId", () => {
   const first = entry({ body: { callId: "c1", turnId: "t1", reason: "duplicate", amount: 500, requestId: "r1" } });
   const last = entry({ body: { callId: "c2", turnId: "t1", reason: "requested_by_customer", amount: 500, requestId: "r2" } });
-  const v = analyzeCell(cellOf("post-effect-fast-fresh"), crashRun({ cellId: "post-effect-fast-fresh", idMode: "fresh", ledger: [first, last] }), { expected: { [REFUNDS]: 1 }, volatileFields: ["requestId"] }, {});
+  const v = analyzeCell(cellOf("post-effect-fast-fresh"), crashRun({ cellId: "post-effect-fast-fresh", idMode: "fresh", ledger: [first, last] }), { expected: { [REFUNDS]: 1 }, volatileFields: ["requestId"], volatileByEndpoint: { [REFUNDS]: ["requestId"] } }, {});
   assert.deepEqual(v.evidence[0]?.diffFields, ["reason"]);
 });
 
@@ -286,7 +287,13 @@ test("baselineFacts returns expected counts, volatile fields and approval for tw
   const b1 = naive({ approvals: 1, ledger: [catalogEntry(), entry({ body: { callId: "c1", reason: "x", amount: 5 } })] });
   const b2 = naive({ cellId: "baseline-2", ledger: [catalogEntry(), entry({ body: { callId: "c2", reason: "x", amount: 5, extra: 1 } })] });
   const facts = baselineFacts("naive", b1, b2, {});
-  assert.deepEqual(facts, { ok: true, expected: { [REFUNDS]: 1 }, volatileFields: ["callId", "extra"], approval: true });
+  assert.deepEqual(facts, {
+    ok: true,
+    expected: { [REFUNDS]: 1 },
+    volatileFields: ["callId", "extra"],
+    volatileByEndpoint: { [REFUNDS]: ["callId", "extra"] },
+    approval: true,
+  });
 });
 
 test("baselineFacts reports approval false when the first baseline needed none", () => {
@@ -302,12 +309,13 @@ test("baselineFacts counts only mutating state changes, never ledger position or
   assert.deepEqual(facts.expected, { [REFUNDS]: 1 });
 });
 
-test("baselineFacts takes volatile fields from the first mutating entry of each baseline", () => {
+test("baselineFacts takes volatile fields from each endpoint's entries paired by order, and an unpaired entry adds none", () => {
   const b1 = naive({ ledger: [catalogEntry(), entry({ body: { a: 1, b: 1 } }), entry({ stateChange: false, benign: "repeat", body: { a: 9, b: 9 } })] });
   const b2 = naive({ cellId: "baseline-2", ledger: [entry({ body: { a: 1, b: 2 } })] });
   const facts = baselineFacts("naive", b1, b2, {});
   assert.ok(facts.ok);
   assert.deepEqual(facts.volatileFields, ["b"]);
+  assert.deepEqual(facts.volatileByEndpoint, { [REFUNDS]: ["b"] });
 });
 
 test("baselineFacts is baseline-failed when the call failed with a validation error, naming the config key", () => {
@@ -412,4 +420,139 @@ test("baselineFacts applies effects.ignore before counting", () => {
   const onlyNoise = baselineFacts("naive", naive({ ledger: [noisy] }), naive({ cellId: "baseline-2", ledger: [noisy] }), { effects: { ignore: ["https://telemetry.example.com/*"] } });
   assert.ok(!onlyNoise.ok);
   assert.equal(onlyNoise.reason, "no-effect");
+});
+
+// --- repeated writes ------------------------------------------------------------------------------------------
+
+const PROFILE_URL = "https://api.acme-store.test/v1/profiles/42";
+const PROFILE_PUT = "PUT api.acme-store.test/v1/profiles/:id";
+const PROFILE_POST = "POST api.acme-store.test/v1/profiles/:id";
+const PROFILE_DELETE = "DELETE api.acme-store.test/v1/profiles/:id";
+
+/**
+ * A state-changing write to the profile of customer 42, with `object` set as the fake provider sets it: the
+ * generic slot for a PUT, PATCH or DELETE, nothing for a POST.
+ */
+function profileWrite(method: "PUT" | "POST" | "DELETE", body: unknown, partial: Partial<LedgerEntry> = {}): LedgerEntry {
+  const object = method === "POST" ? {} : { object: `${method} api.acme-store.test/v1/profiles/42` };
+  return entry({ method, url: PROFILE_URL, endpoint: `${method} api.acme-store.test/v1/profiles/:id`, ...object, body, ...partial });
+}
+
+/** Baseline facts of one write to the profile endpoint whose `volatile` fields vary on their own. */
+function profileBase(volatileByEndpoint: Record<string, string[]>, endpoint = PROFILE_PUT) {
+  return { expected: { [endpoint]: 1 }, volatileFields: [...new Set(Object.values(volatileByEndpoint).flat())].sort(), volatileByEndpoint };
+}
+
+test("volatileFieldsOf pairs entries by endpoint and order", () => {
+  const first = [
+    profileWrite("PUT", { v: 1, t: "1" }),
+    profileWrite("POST", { w: 1, u: "a" }),
+    profileWrite("PUT", { v: 2, t: "2" }),
+    profileWrite("DELETE", { reason: "closed" }),
+  ];
+  const second = [
+    profileWrite("POST", { w: 1, u: "b" }),
+    profileWrite("DELETE", { reason: "closed" }),
+    profileWrite("PUT", { v: 1, t: "3" }),
+    profileWrite("PUT", { v: 2, t: "4" }),
+  ];
+  // `v` differs between the two PUTs of one run, not between the runs; the DELETE endpoint varies in nothing.
+  assert.deepEqual(volatileFieldsOf(first, second), { [PROFILE_PUT]: ["t"], [PROFILE_POST]: ["u"] });
+});
+
+test("a repeat that differs only in varying fields is benign", () => {
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const writes = [profileWrite("PUT", { name: "Ada", updatedAt: "1" }), profileWrite("PUT", { name: "Ada", updatedAt: "2" })];
+  const before = structuredClone(writes);
+
+  const masked = maskRepeats(writes, volatile);
+  assert.deepEqual(masked.entries, [writes[0], { ...writes[1], stateChange: false, benign: MASKED_REPEAT }]);
+  assert.deepEqual(masked.maskedFields, ["updatedAt"]);
+  assert.deepEqual(writes, before, "the input is not mutated");
+
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: [catalogEntry(), ...writes] }), profileBase(volatile), {});
+  assert.equal(v.kind, "clean");
+  assert.equal(v.stateChanges, 1);
+  assert.equal(v.benignRepeats, 1);
+  assert.deepEqual(v.maskedFields, ["updatedAt"]);
+});
+
+test("a repeat that changes a field the baselines agree on is still a state change", () => {
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const writes = [profileWrite("PUT", { count: 1, updatedAt: "1" }), profileWrite("PUT", { count: 2, updatedAt: "2" })];
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
+  assert.equal(v.kind, "dup");
+  assert.equal(v.stateChanges, 2);
+  assert.equal("maskedFields" in v, false);
+});
+
+test("a write to another object is not a repeat", () => {
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const other = { url: "https://api.acme-store.test/v1/profiles/43", object: "PUT api.acme-store.test/v1/profiles/43" };
+  const writes = [profileWrite("PUT", { name: "Ada" }), profileWrite("PUT", { name: "Ada" }, other)];
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
+  assert.equal(v.stateChanges, 2);
+  assert.equal(v.kind, "dup");
+});
+
+test("a field that varies on another endpoint does not mask this one", () => {
+  const volatile = { [PROFILE_POST]: ["updatedAt"] };
+  const writes = [profileWrite("PUT", { name: "Ada", updatedAt: "1" }), profileWrite("PUT", { name: "Ada", updatedAt: "2" })];
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
+  assert.equal(v.stateChanges, 2);
+  assert.equal(v.kind, "dup");
+});
+
+test("a tool that rewrites its own object in one turn is measured the same in baselines and cells", () => {
+  const rewrites = (...stamps: string[]) => stamps.map((updatedAt) => profileWrite("PUT", { v: 1, updatedAt }));
+  const b1 = naive({ ledger: [catalogEntry(), ...rewrites("1", "2")] });
+  const b2 = naive({ cellId: "baseline-2", ledger: [catalogEntry(), ...rewrites("3", "4")] });
+  const facts = baselineFacts("naive", b1, b2, {});
+  assert.ok(facts.ok);
+  assert.deepEqual(facts.expected, { [PROFILE_PUT]: 1 });
+  assert.deepEqual(facts.volatileByEndpoint, { [PROFILE_PUT]: ["updatedAt"] });
+  assert.deepEqual(facts.volatileFields, ["updatedAt"]);
+
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: rewrites("5", "6", "7", "8") }), facts, {});
+  assert.equal(v.kind, "clean");
+  assert.equal(v.stateChanges, 1);
+  assert.equal(v.benignRepeats, 3);
+});
+
+test("a DELETE repeat is masked, a POST repeat never is", () => {
+  const deletes = [profileWrite("DELETE", { reason: "closed", requestedAt: "1" }), profileWrite("DELETE", { reason: "closed", requestedAt: "2" })];
+  const maskedDelete = maskRepeats(deletes, { [PROFILE_DELETE]: ["requestedAt"] });
+  assert.deepEqual(maskedDelete.entries, [deletes[0], { ...deletes[1], stateChange: false, benign: MASKED_REPEAT }]);
+  assert.deepEqual(maskedDelete.maskedFields, ["requestedAt"]);
+
+  const posts = [profileWrite("POST", { name: "Ada", sentAt: "1" }), profileWrite("POST", { name: "Ada", sentAt: "2" })];
+  const volatile = { [PROFILE_POST]: ["sentAt"] };
+  assert.deepEqual(maskRepeats(posts, volatile), { entries: posts, maskedFields: [] });
+  assert.equal(analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: posts }), profileBase(volatile, PROFILE_POST), {}).kind, "dup");
+});
+
+test("bodies that are not objects compare whole", () => {
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const differing = [profileWrite("PUT", "name=Ada;updatedAt=1"), profileWrite("PUT", "name=Ada;updatedAt=2")];
+  assert.deepEqual(maskRepeats(differing, volatile), { entries: differing, maskedFields: [] });
+  assert.equal(analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: differing }), profileBase(volatile), {}).kind, "dup");
+
+  const same = [profileWrite("PUT", "%PDF-1.7 profile"), profileWrite("PUT", "%PDF-1.7 profile")];
+  assert.deepEqual(maskRepeats(same, volatile), { entries: [same[0], { ...same[1], stateChange: false, benign: MASKED_REPEAT }], maskedFields: [] });
+});
+
+test("entries that are already benign or not state changes are left as they are", () => {
+  const profileFile = { kind: "fs" as const, method: "WRITE", url: "data/profile.json", endpoint: "WRITE data/profile.json", status: 0 };
+  const volatile = { [PROFILE_PUT]: ["updatedAt"], [profileFile.endpoint]: ["updatedAt"] };
+  const ledger = [
+    profileWrite("PUT", { name: "Ada", updatedAt: "1" }, { idempotencyKey: "k1" }),
+    profileWrite("PUT", { name: "Ada", updatedAt: "1" }, { idempotencyKey: "k1", stateChange: false, benign: KEY_REPLAY }),
+    profileWrite("PUT", { name: "Ada", updatedAt: "2" }, { stateChange: false, status: 412 }),
+    entry({ ...profileFile, body: { name: "Ada", updatedAt: "1" } }),
+    entry({ ...profileFile, body: { name: "Ada", updatedAt: "2" } }),
+  ];
+  assert.deepEqual(maskRepeats(ledger, volatile), { entries: ledger, maskedFields: [] });
 });
