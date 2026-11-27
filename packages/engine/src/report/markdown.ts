@@ -5,7 +5,7 @@ import type { CellVerdict, Report, Stars, ToolRating } from "../types.ts";
 import { commitLabel, reportDate, starString } from "./format.ts";
 
 const LIMITS =
-  "Limits: crashtest sees HTTP/1.1 requests made through fetch/http/https and node:fs writes inside the app; raw TCP, HTTP/2, gRPC and effects inside eve sandboxes are not observed.";
+  "Limits: crashtest observes HTTP/1.1 requests made through fetch/http/https and node:fs writes inside the app. Other traffic (raw TCP, HTTP/2, gRPC, database and queue drivers, SMTP) and effects inside eve sandboxes are neither observed nor blocked: non-HTTP connections reach their real servers.";
 
 /** A tool that was rated, with its stars. */
 type Rated = ToolRating & { stars: Stars };

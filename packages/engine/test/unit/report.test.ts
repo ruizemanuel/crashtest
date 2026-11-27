@@ -330,7 +330,7 @@ test("the footer states the protection mechanisms and the limits", () => {
   assert.ok(no.includes('Protection mechanisms in eve 1.4.0: `replay: "never"` not available.\n'));
   assert.ok(
     yes.endsWith(
-      "Limits: crashtest sees HTTP/1.1 requests made through fetch/http/https and node:fs writes inside the app; raw TCP, HTTP/2, gRPC and effects inside eve sandboxes are not observed.\n",
+      "Limits: crashtest observes HTTP/1.1 requests made through fetch/http/https and node:fs writes inside the app. Other traffic (raw TCP, HTTP/2, gRPC, database and queue drivers, SMTP) and effects inside eve sandboxes are neither observed nor blocked: non-HTTP connections reach their real servers.\n",
     ),
   );
 });
@@ -409,7 +409,7 @@ test("a report with no tools at all renders", () => {
   assert.equal(md.split("\n")[2], "In lab: 0 cells · eve 1.5.0 · commit abc1234 · 2026-12-02");
   assert.equal(md.split("\n")[4], "**Agent rating: not evaluated**");
   assert.ok(!md.includes("###") && !md.includes("<details>"));
-  assert.ok(md.includes("Protection mechanisms in eve 1.5.0:") && md.includes("Limits: crashtest sees"));
+  assert.ok(md.includes("Protection mechanisms in eve 1.5.0:") && md.includes("Limits: crashtest observes"));
   assert.ok(renderBadge(r).includes("not evaluated"));
 });
 
