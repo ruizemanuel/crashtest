@@ -322,10 +322,11 @@ too, counted per file (`WRITE data/state.json`, `APPEND data/outbox.jsonl`): an 
 write that puts in a file the content it already has is a benign repeat. For Stripe, Slack, Resend and GitHub
 the fake provider keeps state, so a repeat that changes nothing (adding a label that is already there) is a
 benign repeat and does not lower the rating. For other hosts every POST counts, and a PUT, PATCH or DELETE repeated
-with the same body is benign. A PUT or DELETE that writes the same object again (the same method, host and path,
-without the query) is benign too when its body differs from the earlier write only in fields that the two baselines
-show as varying on that endpoint, such as an `updatedAt` timestamp: the lab assumes the service overwrites the
-object. A 5-star summary that rests on such a repeat names those fields.
+with the same body is benign. A PUT or DELETE that writes again an object the fake provider names (the same method,
+host and path, without the query) is benign too when its body differs from the earlier write only in fields that the
+two baselines show as varying on that endpoint, such as an `updatedAt` timestamp: the lab assumes the service
+overwrites the object. A 5-star summary that rests on such a repeat names those fields. A fixture's answer names no
+object, so a write that a fixture answers keeps counting as a state change.
 
 Some requests are reads that providers receive as POST, which are not effects: the Slack Web API read methods
 (`conversations.history`, `conversations.replies`, `conversations.info`, `conversations.list`,

@@ -497,6 +497,22 @@ test("a write to another object is not a repeat", () => {
   assert.equal(v.kind, "dup");
 });
 
+test("a fixture-answered PUT repeat stays a state change", () => {
+  // A fixture answers without naming the object, so nothing says that the second write overwrote the first.
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const fixturePut = (body: unknown) => entry({ method: "PUT", url: PROFILE_URL, endpoint: PROFILE_PUT, body });
+  const cases = [
+    [fixturePut({ name: "Ada", updatedAt: "1" }), fixturePut({ name: "Ada", updatedAt: "2" })],
+    [fixturePut({ name: "Ada" }), fixturePut({ name: "Ada" })],
+  ];
+  for (const writes of cases) {
+    assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+    const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
+    assert.equal(v.kind, "dup");
+    assert.equal(v.stateChanges, 2);
+  }
+});
+
 test("a field that varies on another endpoint does not mask this one", () => {
   const volatile = { [PROFILE_POST]: ["updatedAt"] };
   const writes = [profileWrite("PUT", { name: "Ada", updatedAt: "1" }), profileWrite("PUT", { name: "Ada", updatedAt: "2" })];
@@ -528,7 +544,9 @@ test("a DELETE repeat is masked, a POST repeat never is", () => {
   assert.deepEqual(maskedDelete.entries, [deletes[0], { ...deletes[1], stateChange: false, benign: MASKED_REPEAT }]);
   assert.deepEqual(maskedDelete.maskedFields, ["requestedAt"]);
 
-  const posts = [profileWrite("POST", { name: "Ada", sentAt: "1" }), profileWrite("POST", { name: "Ada", sentAt: "2" })];
+  // Even with the object named, a POST adds to it rather than overwriting it.
+  const named = { object: "POST api.acme-store.test/v1/profiles/42" };
+  const posts = [profileWrite("POST", { name: "Ada", sentAt: "1" }, named), profileWrite("POST", { name: "Ada", sentAt: "2" }, named)];
   const volatile = { [PROFILE_POST]: ["sentAt"] };
   assert.deepEqual(maskRepeats(posts, volatile), { entries: posts, maskedFields: [] });
   assert.equal(analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: posts }), profileBase(volatile, PROFILE_POST), {}).kind, "dup");

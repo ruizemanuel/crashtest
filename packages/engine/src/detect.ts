@@ -109,11 +109,6 @@ export function volatileFieldsOf(first: LedgerEntry[], second: LedgerEntry[]): R
   return Object.fromEntries(volatile);
 }
 
-/** The object an entry writes: the provider's name for it, else its method and URL. */
-function objectOf(entry: LedgerEntry): string {
-  return entry.object ?? `${entry.method} ${entry.url}`;
-}
-
 /** A body without the `skip` keys; a body that is not an object stays whole. */
 function withoutKeys(body: unknown, skip: readonly string[]): unknown {
   if (!isRecord(body)) return body;
@@ -123,19 +118,21 @@ function withoutKeys(body: unknown, skip: readonly string[]): unknown {
 /**
  * The entries with every repeated write to one object that changed only fields varying between the baselines
  * turned into a benign repeat (`MASKED_REPEAT`): an HTTP PUT or DELETE that changed state, after an earlier entry
- * to the same object whose body is the same once the endpoint's `volatile` keys are left out of both. The order is
- * kept and the input is not mutated. `maskedFields` lists the volatile keys whose values did differ in those pairs.
+ * to the same object whose body is the same once the endpoint's `volatile` keys are left out of both. Only a write
+ * whose object the fake provider names (`object`) can be masked: a write it does not name, such as one a fixture
+ * answered, gives no ground to assume an overwrite and stays a state change. The order is kept and the input is not
+ * mutated. `maskedFields` lists the volatile keys whose values did differ in those pairs.
  */
 export function maskRepeats(entries: LedgerEntry[], volatile: Record<string, string[]>): { entries: LedgerEntry[]; maskedFields: string[] } {
   const maskedFields: string[] = [];
   const masked = entries.map((entry, index) => {
-    if (entry.kind !== "http" || !entry.stateChange || !OVERWRITES.has(entry.method)) return entry;
+    const { object } = entry;
+    if (object === undefined || entry.kind !== "http" || !entry.stateChange || !OVERWRITES.has(entry.method)) return entry;
     const skip = Object.hasOwn(volatile, entry.endpoint) ? (volatile[entry.endpoint] ?? []) : [];
-    const object = objectOf(entry);
     const body = canonical(withoutKeys(entry.body, skip));
     const earlier = entries
       .slice(0, index)
-      .findLast((candidate) => objectOf(candidate) === object && canonical(withoutKeys(candidate.body, skip)) === body);
+      .findLast((candidate) => candidate.object === object && canonical(withoutKeys(candidate.body, skip)) === body);
     if (earlier === undefined) return entry;
     maskedFields.push(...differingKeys(earlier.body, entry.body));
     return { ...entry, stateChange: false, benign: MASKED_REPEAT };
