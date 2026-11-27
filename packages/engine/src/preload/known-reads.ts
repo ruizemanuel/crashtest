@@ -36,9 +36,10 @@ const SLACK_PLAIN_READS = new Set([
   "/api/files.info",
 ]);
 const GITHUB_INSTALLATION_TOKEN = /^\/app\/installations\/[^/]+\/access_tokens$/;
-/** Leading whitespace and `#` comment lines of a GraphQL document. */
-const GRAPHQL_IGNORED_PREFIX = /^(?:\s|#[^\n\r]*)*/;
-const GRAPHQL_WRITE = /^(?:mutation|subscription)\b/;
+const GRAPHQL_NAME = /[_A-Za-z][_0-9A-Za-z]*/y;
+const GRAPHQL_WRITES = new Set(["mutation", "subscription"]);
+const GRAPHQL_OPEN = new Set(["{", "(", "["]);
+const GRAPHQL_CLOSE = new Set(["}", ")", "]"]);
 
 /** The channel a Slack read names: in the query, else in the form or JSON body. */
 function slackChannel(req: CatalogRequest): string {
@@ -48,10 +49,58 @@ function slackChannel(req: CatalogRequest): string {
   return typeof fromBody === "string" ? fromBody : "";
 }
 
-/** A body with a `query` text whose first word, after whitespace and comment lines, is neither write keyword. */
+/** The index just after the GraphQL string (`"..."` or `"""..."""`) that starts at `start`, or -1 if it never ends. */
+function graphqlStringEnd(text: string, start: number): number {
+  if (text.startsWith('"""', start)) {
+    // A block string: `\"""` is its only escape.
+    for (let from = start + 3; ; ) {
+      const close = text.indexOf('"""', from);
+      if (close === -1) return -1;
+      if (text.charAt(close - 1) !== "\\") return close + 3;
+      from = close + 3;
+    }
+  }
+  for (let i = start + 1; i < text.length; i++) {
+    const char = text.charAt(i);
+    if (char === "\\") i++;
+    else if (char === '"') return i + 1;
+    else if (char === "\n" || char === "\r") return -1;
+  }
+  return -1;
+}
+
+/**
+ * Whether a GraphQL document may write: a `mutation` or `subscription` name at its top level, outside every `{}`,
+ * `()` and `[]`, every string and every `#` comment. A document that cannot be read to its end (an unclosed string or
+ * bracket) counts as one that writes.
+ */
+function graphqlMayWrite(document: string): boolean {
+  let depth = 0;
+  let i = 0;
+  while (i < document.length) {
+    const char = document.charAt(i);
+    if (char === "#") {
+      while (i < document.length && document.charAt(i) !== "\n" && document.charAt(i) !== "\r") i++;
+    } else if (char === '"') {
+      i = graphqlStringEnd(document, i);
+      if (i === -1) return true;
+    } else if (GRAPHQL_OPEN.has(char) || GRAPHQL_CLOSE.has(char)) {
+      depth += GRAPHQL_OPEN.has(char) ? 1 : -1;
+      if (depth < 0) return true;
+      i++;
+    } else {
+      GRAPHQL_NAME.lastIndex = i;
+      const name = GRAPHQL_NAME.exec(document)?.[0];
+      if (name !== undefined && depth === 0 && GRAPHQL_WRITES.has(name)) return true;
+      i += name?.length ?? 1;
+    }
+  }
+  return depth !== 0;
+}
+
+/** A body with a `query` text that has no `mutation` or `subscription` operation. */
 function isGraphqlQuery(body: unknown): boolean {
-  if (!isRecord(body) || typeof body.query !== "string") return false;
-  return !GRAPHQL_WRITE.test(body.query.replace(GRAPHQL_IGNORED_PREFIX, ""));
+  return isRecord(body) && typeof body.query === "string" && !graphqlMayWrite(body.query);
 }
 
 const KNOWN_READS: readonly KnownRead[] = [

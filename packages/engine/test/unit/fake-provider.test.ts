@@ -234,6 +234,30 @@ test("a GraphQL query is a read and a mutation is an effect", () => {
   assert.equal(p.handle(post(url, { operationName: "Viewer" })).effect.mutating, true);
 });
 
+test("a GraphQL document with a mutation or subscription anywhere at its top level is an effect", () => {
+  const p = createFakeProvider(null);
+  const url = "https://api.linear.test/graphql";
+  const reads = [
+    "query { viewer { id } }",
+    "{ viewer { id } }",
+    "# c\n query Q { a }",
+    "fragment F on X { id } query { ...F }",
+    // The word inside braces, parentheses, a string, a block string or a comment is not an operation.
+    'query { node(id: "mutation") { mutation } }',
+    'query Q($kind: Kind = mutation) { a(text: """mutation { b } \\""" subscription""") } # mutation { c }',
+  ];
+  for (const text of reads) assert.equal(p.handle(post(url, { query: text })).effect.mutating, false, text);
+  const effects = [
+    "# create\n  mutation { issueCreate { id } }",
+    "fragment F on Issue { id }\nmutation { issueCreate { ...F } }",
+    "query A { a } mutation B { b }",
+    "subscription { s }",
+    // A document that cannot be read to its end counts as one that writes.
+    'query { a(text: "mutation) }',
+  ];
+  for (const text of effects) assert.equal(p.handle(post(url, { query: text })).effect.mutating, true, text);
+});
+
 test("a fixture on a known read is answered without a state change", () => {
   const p = createFakeProvider(null, [{ method: "POST", url: "https://slack.com/api/conversations.info", body: { ok: true, channel: { id: "C9" } } }]);
   const result = p.handle(post("https://slack.com/api/conversations.info", { channel: "C1" }));
