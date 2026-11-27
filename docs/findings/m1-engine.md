@@ -23,7 +23,8 @@ used):
 Update (2026-11-27, engine at `8e7ebbc`): the S5 bullets above ("No tool of the real templates can be rated yet",
 "S5 exposed engine gaps") are superseded. SRE: `create_skill`, `watch_slack_channel` and `unwatch_slack_channel` get
 2 stars (a repeated Vercel Blob write), the other eight tools are not evaluated (no effect). Triage: refused with the
-eve version message. Only the gaps "S5 after the engine hardening" lists remain open; the decision is now PRIMARY.
+eve version message. Only the gaps "S5 after the engine hardening" lists remain open. The decision there is still
+FALLBACK, for a new reason: the three 2-star ratings are repeats that the real store absorbs (engine finding 1).
 
 ## Engine verification
 
@@ -237,7 +238,7 @@ token).
 
 ## S5 after the engine hardening
 
-This section's decision supersedes the `**Decision: FALLBACK**` of the earlier S5 section above.
+This section's decision and its reasons replace the decision and the reasons of the earlier S5 section above.
 
 The same two templates at the same commits, run again on 2026-11-27 with the engine at commit `8e7ebbc` (Windows 10,
 Node 24.15.0, scripted mock model and fake provider: no tokens were spent and no request left the machine). Each
@@ -404,7 +405,7 @@ idempotency-capable host). ledger-guard changed `agent/tools/watch_slack_channel
 call again, so no attempt read the guard's record. stdout: `In lab: watch_slack_channel ★★☆☆☆ → ★★★★★ with
 ledger-guard (6 runs, eve 1.2.0)`, followed by the trade-off and store lines.
 
-**Decision: PRIMARY** — `create_skill`, `watch_slack_channel` and `unwatch_slack_channel` make an external effect (a Vercel Blob write) and get 2 stars with a 24-line configuration, so the real template can lead the "fork of an official template" shot, provided the shot presents what the lab found as a second write of the same object (engine finding 1), not as a second record.
+**Decision: FALLBACK** — the three 2-star ratings are repeats that the real store absorbs: `create_skill` and `watch_slack_channel` PUT the same object again with `allowOverwrite: true`, in a body that differs only in fields the two baselines mark as varying (the fake provider hashes the raw body instead of masking those fields first), and `unwatch_slack_channel` repeats a delete of an object that is already gone (engine finding 1). The reference agent `examples/acme-support` leads the demo until finding 1 is fixed and S5 is run again on the SRE template, which is when the decision can become PRIMARY.
 
 ## M2 fix verification
 
