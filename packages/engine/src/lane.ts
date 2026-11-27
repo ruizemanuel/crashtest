@@ -2,7 +2,7 @@
 // An invalid cell is run once more; a cell that shows anything other than clean is confirmed 2 of 3 so that a
 // single flaky run never decides a rating.
 import type { CrashtestConfig } from "./config.ts";
-import { analyzeCell, baselineFacts } from "./detect.ts";
+import { analyzeCell, baselineFacts, mutatingEntries } from "./detect.ts";
 import { runCell, type RunCellOptions } from "./driver/run-cell.ts";
 import { freeTextFields, identityFields, sampleInput } from "./inputs.ts";
 import type { Lab } from "./lab.ts";
@@ -76,7 +76,7 @@ export async function runLane(o: LaneOptions): Promise<LaneResult> {
   const runBaseline = async (id: "baseline-1" | "baseline-2"): Promise<RunSummary> => {
     const cell = baselineCell(id);
     const result = await execute(cell, 1);
-    report(cell, false, result.turnOutcome, String(result.ledger.filter((entry) => entry.mutating && entry.stateChange).length), result);
+    report(cell, false, result.turnOutcome, String(mutatingEntries(result, config).filter((entry) => entry.stateChange).length), result);
     return result;
   };
 

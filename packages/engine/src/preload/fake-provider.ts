@@ -3,6 +3,7 @@
 // (re-adding a label that exists). Pure and JSON-serializable: the preload keeps the state across a crash.
 import { createHash } from "node:crypto";
 import { append, handleCatalog, honorsIdempotencyKey, idempotencyConflict, nextId, own, type CatalogRequest, type Outcome } from "./catalog.ts";
+import { answerKnownRead, isKnownRead } from "./known-reads.ts";
 import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "./normalize.ts";
 
 export interface FakeRequest {
@@ -139,8 +140,12 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
 
   function handle(req: FakeRequest): FakeResult {
     const method = req.method.toUpperCase();
-    const mutating = !NON_MUTATING.has(method);
     const body = parseBody(req.bodyText, req.headers["content-type"]);
+    const url = parseUrl(req.url);
+    // A read that the provider receives as a POST (a Slack read method, a token exchange, a GraphQL query) is not
+    // an effect.
+    const knownRead = url !== null && isKnownRead(method, url.hostname, redactPath(url.pathname), body);
+    const mutating = !NON_MUTATING.has(method) && !knownRead;
     const idempotencyKey = mutating ? req.headers["idempotency-key"] || req.headers["x-idempotency-key"] || undefined : undefined;
     const effect: FakeEffect = {
       mutating,
@@ -153,7 +158,6 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
     const matched = compiled.find(({ fixture, pattern }) => (fixture.method === undefined || fixture.method.toUpperCase() === method) && pattern.test(req.url));
     if (matched) return respond(matched.fixture.status ?? 200, matched.fixture.body ?? {}, { ...effect, stateChange: mutating });
 
-    const url = parseUrl(req.url);
     if (url === null) return respond(400, { error: "invalid_url" }, effect);
     // Every state key derives from the redacted path: the state is persisted and a URL path can carry a secret.
     const path = redactPath(url.pathname);
@@ -168,11 +172,12 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
       redactedBody: effect.body,
     };
     const answer = (): FakeResult => {
-      const outcome = handleCatalog(request, store) ?? generic(request);
+      const outcome = knownRead ? answerKnownRead(request, store) : (handleCatalog(request, store) ?? generic(request));
       return respond(outcome.status, outcome.body, withBenign({ ...effect, stateChange: outcome.stateChange }, outcome.benign));
     };
     // A key counts only where the real service honors it. Slack and GitHub ignore the header, so a repeat there is a
-    // real second effect; a host outside the catalog is assumed to honor it (detection names those hosts).
+    // real second effect; a host outside the catalog is assumed to honor it (detection names those hosts). A known
+    // read is not mutating, so it carries no key and is answered right here.
     if (idempotencyKey === undefined || !honorsIdempotencyKey(url.hostname)) return answer();
 
     const slot = `${url.host} ${idempotencyKey}`;

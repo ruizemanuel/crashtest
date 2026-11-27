@@ -200,22 +200,35 @@ test("only mutating requests trigger the crash and other crash points are left t
 
 test("a request that effects.ignore names never claims the crash: the crash follows the next effect", async (t) => {
   const runDir = tempDir(t);
-  const env = { CT_CRASH_POINT: "post-effect-fast", CT_EFFECTS_IGNORE: JSON.stringify(["https://api.vercel.com/v1/connect/*"]) };
-  const out = await runChild("token-then-refund", { runDir, env });
+  const env = { CT_CRASH_POINT: "post-effect-fast", CT_EFFECTS_IGNORE: JSON.stringify(["https://telemetry.acme.test/*"]) };
+  const out = await runChild("telemetry-then-refund", { runDir, env });
   assert.notEqual(out.code, 0);
   // The ignored POST was answered; the process died after the refund, before its answer.
-  assert.equal(eventOf(out, "token")?.status, 200);
+  assert.equal(eventOf(out, "telemetry")?.status, 200);
   assert.equal(eventOf(out, "response"), undefined);
   assert.equal(printedAfter(out), false);
   assert.equal(readFileSync(join(runDir, "crashed.marker"), "utf8"), `post-effect-fast pid=${out.pid}`);
   // Both are in the ledger, the ignored one too: detection leaves it out when it counts.
-  assert.deepEqual(readLedger(runDir).map((e) => [e.endpoint, e.mutating]), [["POST api.vercel.com/v1/connect/token/slack%2Fsre", true], ["POST api.stripe.com/v1/refunds", true]]);
+  assert.deepEqual(readLedger(runDir).map((e) => [e.endpoint, e.mutating]), [["POST telemetry.acme.test/v1/events", true], ["POST api.stripe.com/v1/refunds", true]]);
 
   // Without the ignore list the first POST claims the crash.
   const plainRunDir = tempDir(t);
-  const plain = await runChild("token-then-refund", { runDir: plainRunDir, env: { CT_CRASH_POINT: "post-effect-fast" } });
-  assert.equal(eventOf(plain, "token"), undefined);
-  assert.deepEqual(readLedger(plainRunDir).map((e) => e.endpoint), ["POST api.vercel.com/v1/connect/token/slack%2Fsre"]);
+  const plain = await runChild("telemetry-then-refund", { runDir: plainRunDir, env: { CT_CRASH_POINT: "post-effect-fast" } });
+  assert.equal(eventOf(plain, "telemetry"), undefined);
+  assert.deepEqual(readLedger(plainRunDir).map((e) => e.endpoint), ["POST telemetry.acme.test/v1/events"]);
+});
+
+test("a known read never claims the crash point", async (t) => {
+  const runDir = tempDir(t);
+  const out = await runChild("token-then-notify", { runDir, env: { CT_CRASH_POINT: "post-effect-fast" } });
+  assert.notEqual(out.code, 0);
+  // The token exchange was answered; the process died after the message, before its answer.
+  assert.equal(eventOf(out, "token")?.status, 200);
+  assert.equal(eventOf(out, "response"), undefined);
+  assert.equal(printedAfter(out), false);
+  assert.equal(readFileSync(join(runDir, "crashed.marker"), "utf8"), `post-effect-fast pid=${out.pid}`);
+  // Both are in the ledger; the read is recorded as not mutating.
+  assert.deepEqual(readLedger(runDir).map((e) => [e.endpoint, e.mutating]), [["POST api.vercel.com/v1/connect/token/slack%2Fsre", false], ["POST api.acme-notify.test/v1/messages", true]]);
 });
 
 test("an ignore list that is not a JSON array of strings stops the process before it runs", async (t) => {

@@ -162,6 +162,86 @@ test("GET slack conversations.history returns the channel messages newest first"
   assert.deepEqual(body.messages[0], { ts: "3.000100", channel: "C1", text: "two" });
 });
 
+test("a Slack read method sent as POST is not an effect and reads the channel's messages", () => {
+  const p = createFakeProvider(null);
+  const posted = p.handle(post("https://slack.com/api/chat.postMessage", { channel: "C1", text: "hi" }));
+  assert.equal(posted.effect.mutating, true);
+  const read = p.handle(post("https://slack.com/api/conversations.history", "channel=C1", FORM));
+  assert.equal(read.status, 200);
+  assert.equal(read.effect.mutating, false);
+  assert.equal(read.effect.stateChange, false);
+  assert.deepEqual((read.body as any).messages.map((m: any) => m.text), ["hi"]);
+  // A replies read of the same channel, with a JSON body, reads the same messages.
+  const replies = p.handle(post("https://slack.com/api/conversations.replies", { channel: "C1", ts: "1.000100" }));
+  assert.equal(replies.effect.mutating, false);
+  assert.deepEqual((replies.body as any).messages.map((m: any) => m.text), ["hi"]);
+});
+
+test("conversations.info answers a channel the bot is a member of", () => {
+  const result = createFakeProvider(null).handle(post("https://slack.com/api/conversations.info", { channel: "C1" }));
+  assert.deepEqual(result.body, { ok: true, channel: { id: "C1", name: "C1", is_member: true } });
+  assert.equal(result.effect.mutating, false);
+  assert.equal(result.effect.stateChange, false);
+});
+
+test("the other Slack read methods answer ok whether sent as GET or POST", () => {
+  const p = createFakeProvider(null);
+  for (const method of ["users.info", "auth.test", "search.messages"]) {
+    for (const r of [p.handle(post(`https://slack.com/api/${method}`, { user: "U1" })), p.handle(get(`https://slack.com/api/${method}?user=U1`))]) {
+      assert.deepEqual(r.body, { ok: true }, method);
+      assert.equal(r.effect.mutating, false, method);
+      assert.equal(r.effect.stateChange, false, method);
+    }
+  }
+});
+
+test("Slack write methods stay effects", () => {
+  const p = createFakeProvider(null);
+  for (const method of ["chat.postMessage", "chat.update", "reactions.add", "conversations.join"]) {
+    const result = p.handle(post(`https://slack.com/api/${method}`, { channel: "C1", text: "x" }));
+    assert.equal(result.effect.mutating, true, method);
+  }
+});
+
+test("the Vercel Connect token exchange and the GitHub installation token are not effects", () => {
+  const p = createFakeProvider(null);
+  const connect = p.handle(post("https://api.vercel.com/v1/connect/token/slack%2Fsre", {}));
+  assert.equal(connect.effect.mutating, false);
+  assert.equal(connect.effect.stateChange, false);
+  assert.equal((connect.body as any).token, "ct-fake-connect-token");
+  const github = p.handle(post("https://api.github.com/app/installations/42/access_tokens"));
+  assert.equal(github.effect.mutating, false);
+  assert.equal(github.effect.stateChange, false);
+  assert.equal((github.body as any).expires_at, "2099-01-01T00:00:00Z");
+  assert.deepEqual(github.body, { token: "ct-fake-installation-token", expires_at: "2099-01-01T00:00:00Z", permissions: {}, repository_selection: "all" });
+  // Neither changed the provider state.
+  assert.deepEqual(p.state.collections, {});
+});
+
+test("a GraphQL query is a read and a mutation is an effect", () => {
+  const p = createFakeProvider(null);
+  const url = "https://api.linear.test/graphql";
+  const query = p.handle(post(url, { query: "query { viewer { id } }" }));
+  assert.equal(query.effect.mutating, false);
+  assert.equal(query.effect.stateChange, false);
+  assert.deepEqual(query.body, { data: {} });
+  // A shorthand query is a read too.
+  assert.equal(p.handle(post(url, { query: "\n { viewer { id } }" })).effect.mutating, false);
+  for (const text of ["# create\n  mutation { issueCreate { id } }", "mutation{ issueCreate { id } }", "subscription { issues { id } }"]) {
+    assert.equal(p.handle(post(url, { query: text })).effect.mutating, true, text);
+  }
+  // Without a query text nothing says it is a read.
+  assert.equal(p.handle(post(url, { operationName: "Viewer" })).effect.mutating, true);
+});
+
+test("a fixture on a known read is answered without a state change", () => {
+  const p = createFakeProvider(null, [{ method: "POST", url: "https://slack.com/api/conversations.info", body: { ok: true, channel: { id: "C9" } } }]);
+  const result = p.handle(post("https://slack.com/api/conversations.info", { channel: "C1" }));
+  assert.equal(result.effect.mutating, false);
+  assert.equal(result.effect.stateChange, false);
+  assert.deepEqual(result.body, { ok: true, channel: { id: "C9" } });
+});
+
 test("POST resend emails creates an email", () => {
   const p = createFakeProvider(null);
   const r = p.handle(post("https://api.resend.com/emails", { from: "a@x.test", to: "b@x.test", subject: "Hello", html: "<p>x</p>" }));

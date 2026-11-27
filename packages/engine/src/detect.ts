@@ -28,7 +28,7 @@ export function hostOfEndpoint(endpoint: string): string {
 // --- ledger helpers -------------------------------------------------------------------------------------------
 
 /** The mutating ledger entries of a run, minus those the config says to ignore. Reads never count as effects. */
-function mutatingEntries(run: RunSummary, config: CrashtestConfig): LedgerEntry[] {
+export function mutatingEntries(run: RunSummary, config: CrashtestConfig): LedgerEntry[] {
   const ignored = ignoreMatcher(config.effects?.ignore ?? []);
   return run.ledger.filter((entry) => entry.mutating && !ignored(entry.url));
 }

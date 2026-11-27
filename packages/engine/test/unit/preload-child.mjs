@@ -173,10 +173,15 @@ switch (scenario) {
     say({ event: "lookup", ...(await send("GET", "https://api.stripe.com/v1/refunds?charge=ch_1", { headers: { authorization: "Bearer sk_live_secret" } })) });
     say({ event: "response", ...(await refund()) });
     break;
-  case "token-then-refund":
-    // A token exchange sent as a POST before the tool's own effect, as Vercel Connect does.
-    say({ event: "token", ...(await send("POST", "https://api.vercel.com/v1/connect/token/slack%2Fsre", { headers: { "content-type": "application/json" }, body: {} })) });
+  case "telemetry-then-refund":
+    // A telemetry POST before the tool's own effect: a mutating request that is not the tool's.
+    say({ event: "telemetry", ...(await send("POST", "https://telemetry.acme.test/v1/events", { headers: { "content-type": "application/json" }, body: { event: "start" } })) });
     say({ event: "response", ...(await refund()) });
+    break;
+  case "token-then-notify":
+    // A token exchange sent as a POST before the tool's own effect, as Vercel Connect does: a read, not an effect.
+    say({ event: "token", ...(await send("POST", "https://api.vercel.com/v1/connect/token/slack%2Fsre", { headers: { "content-type": "application/json" }, body: {} })) });
+    say({ event: "response", ...(await send("POST", "https://api.acme-notify.test/v1/messages", { headers: { "content-type": "application/json" }, body: { to: "alice", text: "hi" } })) });
     break;
   case "fs-build-then-append":
     // Build output written inside the lab before the tool's own effect.

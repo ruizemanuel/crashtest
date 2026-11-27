@@ -324,6 +324,21 @@ test("every run reports a progress line with its label, verdict, effects and sec
   ]);
 });
 
+test("baseline progress counts leave out effects.ignore matches", async () => {
+  const lines: string[] = [];
+  const ledger = [
+    entry({ url: "https://api.vercel.com/v1/connect/x", endpoint: "POST api.vercel.com/v1/connect/x" }),
+    entry({ url: "https://api.acme-notify.test/v1/messages", endpoint: "POST api.acme-notify.test/v1/messages" }),
+  ];
+  // Every run, crash cells too, has the same two state changes: the ignored one never counts.
+  const runner = async (o: RunCellOptions): Promise<RunSummary> => ({ ...runOf(o, o.cell.point === "none" ? "effect" : "clean"), ledger });
+  const config: CrashtestConfig = { effects: { ignore: ["https://api.vercel.com/*"] } };
+  await runLane({ lab: LAB, tool: NAIVE, config, runner, onProgress: (line) => lines.push(line) });
+  const baselines = lines.filter((line) => line.includes(" baseline "));
+  assert.equal(baselines.length, 2, lines.join("\n"));
+  for (const line of baselines) assert.ok(line.includes("(1 effects,"), line);
+});
+
 test("progress labels use the approval wording for a tool that needs approval", async () => {
   const lines: string[] = [];
   await lane(fakeRunner({}, 1), { onProgress: (line) => lines.push(line) });

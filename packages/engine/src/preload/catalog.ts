@@ -130,10 +130,7 @@ function slack(req: CatalogRequest, state: ProviderState): Outcome | null {
     append(state, `ct:slack.messages:${channel}`, { ts, channel, text: text(fields.text) ?? "" });
     return ok({ ok: true, channel, ts }, true);
   }
-  if (req.method === "GET" && req.path === "/api/conversations.history") {
-    const messages = listOf(state, `ct:slack.messages:${req.query.get("channel") ?? ""}`).toReversed();
-    return ok({ ok: true, messages }, false);
-  }
+  // The read methods (conversations.history and the rest) are answered as known reads (see known-reads.ts).
   return null;
 }
 

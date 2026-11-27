@@ -16,6 +16,7 @@ test("smoke: discover the zoo", { timeout: 900_000 }, async () => {
     "naive",
     "opkey_guard",
     "phantom_failure",
+    "post_reads",
     "readonly",
     "upstream_key",
   ]);

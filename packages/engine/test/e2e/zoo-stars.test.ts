@@ -82,3 +82,9 @@ test("zoo: readonly is not evaluable for lack of an effect", E2E, async (t) => {
   assert.equal(result.rating.stars, null, detail);
   assert.equal(result.rating.na?.reason, "no-effect", detail);
 });
+
+test("zoo: post_reads is not evaluable for lack of an effect", E2E, async (t) => {
+  const { result, detail } = await lane(t, "post_reads");
+  assert.equal(result.rating.stars, null, detail);
+  assert.equal(result.rating.na?.reason, "no-effect", detail);
+});
