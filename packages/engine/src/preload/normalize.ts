@@ -2,7 +2,8 @@
 // Loaded inside the agent's own process, so no dependencies and no I/O.
 import { createHash } from "node:crypto";
 
-const REDACTED = "[redacted]";
+/** What a redacted value becomes in the ledger. */
+export const REDACTED = "[redacted]";
 const MAX_TEXT_CHARS = 4096;
 const SENSITIVE_KEY = /token|secret|password|api_?key|authorization/i;
 // A bare `key` query parameter is the conventional API-key parameter (Google APIs and others).

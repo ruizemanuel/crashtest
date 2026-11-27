@@ -4,6 +4,7 @@ import type { CrashtestConfig } from "./config.ts";
 import { hostInCatalog } from "./preload/catalog.ts";
 import { ignoreMatcher } from "./preload/effects-ignore.ts";
 import { KEY_REPLAY } from "./preload/fake-provider.ts";
+import { REDACTED } from "./preload/normalize.ts";
 import type { Cell, CellVerdict, EffectEvidence, LedgerEntry, NaReason, RunSummary, StreamCall } from "./types.ts";
 
 export type BaselineFacts =
@@ -20,6 +21,12 @@ export type BaselineFacts =
 
 /** The benign label of a repeated write to one object whose body differs only in fields that vary between the baselines. */
 export const MASKED_REPEAT = "same object written again; only fields that vary between the baselines differ";
+
+/**
+ * What `maskedFields` records for a masked repeat whose bodies differ in no key but hold a redacted value: the ledger
+ * redacts secrets, so the difference the provider saw can only sit in a redacted field.
+ */
+export const REDACTED_FIELD = "a redacted field";
 
 /** The methods whose repeat to one object overwrites it rather than adding to it. */
 const OVERWRITES = new Set(["PUT", "DELETE"]);
@@ -92,21 +99,38 @@ function sortedUnique(values: Iterable<string>): string[] {
 }
 
 /**
+ * The entries grouped by the object they write, within their endpoint: one group per object the fake provider
+ * names, and one for the endpoint's entries that name none.
+ */
+function groupByObject(entries: LedgerEntry[]): Map<string, LedgerEntry[]> {
+  const groups = new Map<string, LedgerEntry[]>();
+  for (const entry of entries) {
+    const key = JSON.stringify([entry.endpoint, entry.object ?? null]);
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+  return groups;
+}
+
+/**
  * The body fields that vary on their own, per endpoint: the sorted top-level keys that differ between the n-th
- * entry of the endpoint in one baseline and the n-th in the other. Endpoints where no key differs are left out.
+ * entry to an object in one baseline and the n-th to that object in the other (entries that name no object are
+ * paired per endpoint). Pairing per object keeps two objects on one endpoint, such as two Vercel Blob puts that reach
+ * the provider in another order, from being compared with each other. Endpoints where no key differs are left out.
  */
 export function volatileFieldsOf(first: LedgerEntry[], second: LedgerEntry[]): Record<string, string[]> {
-  const others = groupByEndpoint(second);
+  const others = groupByObject(second);
   const volatile = new Map<string, string[]>();
-  for (const [endpoint, entries] of groupByEndpoint(first)) {
-    const partners = others.get(endpoint) ?? [];
-    const keys = entries.flatMap((entry, index) => {
+  for (const [key, entries] of groupByObject(first)) {
+    const partners = others.get(key) ?? [];
+    entries.forEach((entry, index) => {
       const partner = partners[index];
-      return partner === undefined ? [] : differingKeys(entry.body, partner.body);
+      const keys = partner === undefined ? [] : differingKeys(entry.body, partner.body);
+      if (keys.length > 0) volatile.set(entry.endpoint, [...(volatile.get(entry.endpoint) ?? []), ...keys]);
     });
-    if (keys.length > 0) volatile.set(endpoint, sortedUnique(keys));
   }
-  return Object.fromEntries(volatile);
+  return Object.fromEntries([...volatile].map(([endpoint, keys]) => [endpoint, sortedUnique(keys)]));
 }
 
 /** A body without the `skip` keys; a body that is not an object stays whole. */
@@ -115,13 +139,29 @@ function withoutKeys(body: unknown, skip: readonly string[]): unknown {
   return Object.fromEntries(Object.entries(body).filter(([key]) => !skip.includes(key)));
 }
 
+/** Whether a ledger body holds a redacted value at any depth. */
+function holdsRedacted(body: unknown): boolean {
+  if (body === REDACTED) return true;
+  if (Array.isArray(body)) return body.some(holdsRedacted);
+  return isRecord(body) && Object.values(body).some(holdsRedacted);
+}
+
+/**
+ * Whether the object holds the body of this write afterwards: the write changed state, or it was a benign repeat of
+ * a body the object already held. A write the provider refused (a conditional PUT answered 412) stored nothing.
+ */
+function applied(entry: LedgerEntry): boolean {
+  return entry.stateChange || entry.benign !== undefined;
+}
+
 /**
  * The entries with every repeated write to one object that changed only fields varying between the baselines
- * turned into a benign repeat (`MASKED_REPEAT`): an HTTP PUT or DELETE that changed state, after an earlier entry
- * to the same object whose body is the same once the endpoint's `volatile` keys are left out of both. Only a write
- * whose object the fake provider names (`object`) can be masked: a write it does not name, such as one a fixture
- * answered, gives no ground to assume an overwrite and stays a state change. The order is kept and the input is not
- * mutated. `maskedFields` lists the volatile keys whose values did differ in those pairs.
+ * turned into a benign repeat (`MASKED_REPEAT`): an HTTP PUT or DELETE that changed state, after an earlier applied
+ * entry to the same object whose body is the same once the endpoint's `volatile` keys are left out of both. Only a
+ * write whose object the fake provider names (`object`) can be masked: a write it does not name, such as one a
+ * fixture answered, gives no ground to assume an overwrite and stays a state change. The order is kept and the input
+ * is not mutated. `maskedFields` lists the volatile keys whose values did differ in those pairs, and
+ * `REDACTED_FIELD` for a pair whose bodies differ in no key but hold a redacted value.
  */
 export function maskRepeats(entries: LedgerEntry[], volatile: Record<string, string[]>): { entries: LedgerEntry[]; maskedFields: string[] } {
   const maskedFields: string[] = [];
@@ -132,9 +172,11 @@ export function maskRepeats(entries: LedgerEntry[], volatile: Record<string, str
     const body = canonical(withoutKeys(entry.body, skip));
     const earlier = entries
       .slice(0, index)
-      .findLast((candidate) => candidate.object === object && canonical(withoutKeys(candidate.body, skip)) === body);
+      .findLast((candidate) => applied(candidate) && candidate.object === object && canonical(withoutKeys(candidate.body, skip)) === body);
     if (earlier === undefined) return entry;
-    maskedFields.push(...differingKeys(earlier.body, entry.body));
+    const differing = differingKeys(earlier.body, entry.body);
+    const hidden = differing.length === 0 && (holdsRedacted(earlier.body) || holdsRedacted(entry.body));
+    maskedFields.push(...(hidden ? [REDACTED_FIELD] : differing));
     return { ...entry, stateChange: false, benign: MASKED_REPEAT };
   });
   return { entries: masked, maskedFields: sortedUnique(maskedFields) };
@@ -182,14 +224,18 @@ function callsTo(run: RunSummary): StreamCall[] {
   return run.calls.filter((candidate) => candidate.tool === run.tool);
 }
 
-/** A completed call whose output is a refusal counts as the error the model got. */
+/**
+ * A completed call whose output is a refusal counts as the error the model got, or as an uncertain outcome when an
+ * uncertain-outcome code (`UNCERTAIN`) appears anywhere in the output, as the whole error of a thrown call is read.
+ */
 function outcomeOf(calls: StreamCall[]): { outcome: CellVerdict["outcome"]; error?: string } {
   const last = calls.findLast((candidate) => SETTLED.has(candidate.outcome));
   if (!last) return { outcome: "missing" };
   if (last.outcome === "completed") {
     const refusal = refusalOf(last.output);
     if (refusal === null) return { outcome: "success" };
-    return UNCERTAIN.test(refusal) ? { outcome: "uncertain" } : { outcome: "error", error: refusal };
+    const uncertain = UNCERTAIN.test(refusal) || UNCERTAIN.test(JSON.stringify(last.output) ?? "");
+    return uncertain ? { outcome: "uncertain" } : { outcome: "error", error: refusal };
   }
   if (last.outcome === "abandoned") return { outcome: "abandoned" };
   if (isUncertain(last.error)) return { outcome: "uncertain" };
@@ -209,6 +255,8 @@ interface BaselineProblem {
   toolError: boolean;
   /** The AI SDK rejected the call's input before the tool ran. */
   rejectedInput?: true;
+  /** The call completed and returned its failure as a value; `text` is the refusal's own text. */
+  refusal?: true;
 }
 
 /**
@@ -228,8 +276,9 @@ function baselineHint(tool: string, problem: BaselineProblem): string {
 
 /**
  * Why a baseline run is not usable, or null when it is. A call whose input the AI SDK rejected never reaches eve's
- * stream, so without a call the error result the model saw (`firstToolError`) says why. Otherwise the call's own
- * error message wins when there is one.
+ * stream, so without a call the error result the model saw (`firstToolError`) says why. A completed call that
+ * returned a refusal failed as much as one that threw, whatever it changed before: an error that the run without a
+ * crash returns too says nothing about recovery. Otherwise the call's own error message wins when there is one.
  */
 function baselineProblem(tool: string, run: RunSummary): BaselineProblem | null {
   const last = callsTo(run).at(-1);
@@ -237,10 +286,18 @@ function baselineProblem(tool: string, run: RunSummary): BaselineProblem | null 
     return { text: `the call was rejected before ${tool} ran: ${run.firstToolError}`, toolError: true, rejectedInput: true };
   }
   const completed = run.turnOutcome === "completed" && run.preloadReady && last?.outcome === "completed";
-  if (completed) return null;
+  if (completed) {
+    const refusal = refusalOf(last.output);
+    return refusal === null ? null : { text: refusal, toolError: true, refusal: true };
+  }
   const message = errorMessage(last?.error);
   if (message !== "") return { text: message, toolError: true };
   return { text: engineProblem(tool, run, last), toolError: false };
+}
+
+/** A baseline problem as the reason words it: a refusal says that the call returned it. */
+function describeProblem(problem: BaselineProblem): string {
+  return problem.refusal ? `the call returned a refusal: ${problem.text}` : problem.text;
 }
 
 /** A failed baseline without an error message from the tool, as the engine words it. */
@@ -269,7 +326,7 @@ function sameCounts(a: Map<string, number>, b: Map<string, number>): boolean {
 export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, config: CrashtestConfig): BaselineFacts {
   for (const run of [b1, b2]) {
     const problem = baselineProblem(tool, run);
-    if (problem !== null) return { ok: false, reason: "baseline-failed", detail: `${problem.text}${baselineHint(tool, problem)}` };
+    if (problem !== null) return { ok: false, reason: "baseline-failed", detail: `${describeProblem(problem)}${baselineHint(tool, problem)}` };
   }
   const first = mutatingEntries(b1, config);
   const second = mutatingEntries(b2, config);
@@ -283,16 +340,7 @@ export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, conf
       detail: `baseline 1: ${describeCounts(counts1)}; baseline 2: ${describeCounts(counts2)}`,
     };
   }
-  if (counts1.size === 0) {
-    // A tool that refuses by returning a value is not a tool without effects: say why it changed nothing.
-    for (const run of [b1, b2]) {
-      const text = refusalOf(callsTo(run).at(-1)?.output);
-      if (text !== null) {
-        return { ok: false, reason: "baseline-failed", detail: `the call returned a refusal: ${text}${baselineHint(tool, { text, toolError: true })}` };
-      }
-    }
-    return { ok: false, reason: "no-effect", detail: "No external effect observed in the baseline." };
-  }
+  if (counts1.size === 0) return { ok: false, reason: "no-effect", detail: "No external effect observed in the baseline." };
   return {
     ok: true,
     expected: Object.fromEntries(counts1),

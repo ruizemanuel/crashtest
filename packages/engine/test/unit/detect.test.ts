@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MASKED_REPEAT, analyzeCell, baselineFacts, maskRepeats, refusalOf, volatileFieldsOf } from "../../src/detect.ts";
+import { MASKED_REPEAT, REDACTED_FIELD, analyzeCell, baselineFacts, maskRepeats, refusalOf, volatileFieldsOf } from "../../src/detect.ts";
 import { CORE_CELLS, cellLabel, crashCells } from "../../src/matrix.ts";
 import { KEY_REPLAY } from "../../src/preload/fake-provider.ts";
+import { redactBody } from "../../src/preload/normalize.ts";
 import type { Cell, CellId, LedgerEntry } from "../../src/types.ts";
 import { REFUNDS, REFUNDS_URL, call, catalogEntry, entry, summary } from "./builders.ts";
 
@@ -414,10 +415,40 @@ test("refusalOf takes the first text that says why, else the output cut to 200 c
   assert.equal(refusalOf(["error"]), null);
 });
 
-test("a refusal with an effect in the baselines is not re-read", () => {
+test("a refusal in a baseline's last call is a failed baseline, even after an effect", () => {
   const output = { success: false, error: "Authorization denied: not in a Slack context" };
   const facts = baselineFacts("t", returned("baseline-1", output, [entry()]), returned("baseline-2", output, [entry()]), {});
-  assert.equal(facts.ok, true);
+  assert.ok(!facts.ok);
+  assert.equal(facts.reason, "baseline-failed");
+  assert.equal(
+    facts.detail,
+    "the call returned a refusal: Authorization denied: not in a Slack context — set auth or scenarios.t.auth in crashtest.config.json to give the lab session the identity this tool checks",
+  );
+
+  // The undisturbed run returns the error too, so no crash cell could show it as a result of recovery.
+  const late = { success: false, error: "Notification failed after the ticket was created" };
+  const after = baselineFacts("t", returned("baseline-1", late, [entry()]), returned("baseline-2", late, [entry()]), {});
+  assert.ok(!after.ok);
+  assert.equal(after.reason, "baseline-failed");
+  assert.equal(
+    after.detail,
+    "the call returned a refusal: Notification failed after the ticket was created — see the run directory; crashtest.config.json can set scenarios.t.input, auth, env and fixtures",
+  );
+
+  // One baseline is enough, as for a thrown error.
+  const oneSided = baselineFacts("t", returned("baseline-1", { ok: true }, [entry()]), returned("baseline-2", late, [entry()]), {});
+  assert.ok(!oneSided.ok);
+  assert.equal(oneSided.reason, "baseline-failed");
+  assert.match(oneSided.detail, /^the call returned a refusal: Notification failed/);
+});
+
+test("a refusal with no effect in a cell is clean, with the error as its outcome", () => {
+  const run = crashRun({ calls: [call({ output: { success: false, error: "Rate limited, try again later" } })], ledger: [catalogEntry()] });
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), run, ONE_REFUND, {});
+  assert.equal(v.kind, "clean");
+  assert.equal(v.outcome, "error");
+  assert.equal(v.error, "Rate limited, try again later");
+  assert.equal(v.stateChanges, 0);
 });
 
 test("a refusal after the effect in a cell is a phantom failure", () => {
@@ -434,6 +465,19 @@ test("a refusal that says the outcome is unknown is an uncertain outcome", () =>
   assert.equal(v.kind, "clean");
   assert.equal(v.outcome, "uncertain");
   assert.equal("error" in v, false);
+});
+
+test("a refusal that carries the uncertain code outside its text is an uncertain outcome", () => {
+  for (const output of [
+    { success: false, error: { code: "OUTCOME_UNKNOWN", message: "The upload may or may not have happened" } },
+    { ok: false, code: "TOOL_RECOVERY_REQUIRED", message: "Check the ticket before retrying" },
+  ]) {
+    const run = crashRun({ calls: [call({ output })], ledger: [entry()] });
+    const v = analyzeCell(cellOf("post-effect-fast-stable"), run, ONE_REFUND, {});
+    assert.equal(v.kind, "clean", JSON.stringify(output));
+    assert.equal(v.outcome, "uncertain", JSON.stringify(output));
+    assert.equal("error" in v, false, JSON.stringify(output));
+  }
 });
 
 test("a rejected input is a failed baseline with the input hint, even when the input mentions a session", () => {
@@ -534,6 +578,32 @@ test("volatileFieldsOf pairs entries by endpoint and order", () => {
   assert.deepEqual(volatileFieldsOf(first, second), { [PROFILE_PUT]: ["t"], [PROFILE_POST]: ["u"] });
 });
 
+test("volatile fields are learned per object, so two objects on one endpoint in another order are not paired across", () => {
+  const BLOB_PUT = "PUT vercel.com/api/blob/";
+  const blobPut = (pathname: string, body: unknown): LedgerEntry =>
+    entry({ method: "PUT", url: `https://vercel.com/api/blob/?pathname=${pathname}`, endpoint: BLOB_PUT, object: `vercel-blob:${pathname}`, body });
+  const alpha = (updatedAt: string, title = "Alpha") => blobPut("notes/a.json", { id: "a", title, updatedAt });
+  const beta = (updatedAt: string) => blobPut("notes/b.json", { id: "b", title: "Beta", updatedAt });
+
+  // The two writes reach the provider in another order in the second baseline.
+  const first = [alpha("1"), beta("2")];
+  const second = [beta("3"), alpha("4")];
+  assert.deepEqual(volatileFieldsOf(first, second), { [BLOB_PUT]: ["updatedAt"] });
+
+  const b1 = naive({ ledger: [catalogEntry(), ...first] });
+  const b2 = naive({ cellId: "baseline-2", ledger: [catalogEntry(), ...second] });
+  const facts = baselineFacts("naive", b1, b2, {});
+  assert.ok(facts.ok);
+  assert.deepEqual(facts.expected, { [BLOB_PUT]: 2 });
+  assert.deepEqual(facts.volatileByEndpoint, { [BLOB_PUT]: ["updatedAt"] });
+
+  // A later write changes the title of one object: a real content change, not a repeat.
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: [alpha("5"), beta("6"), alpha("7", "Alpha, edited")] }), facts, {});
+  assert.equal(v.kind, "dup");
+  assert.equal(v.stateChanges, 3);
+  assert.equal("maskedFields" in v, false);
+});
+
 test("a repeat that differs only in varying fields is benign", () => {
   const volatile = { [PROFILE_PUT]: ["updatedAt"] };
   const writes = [profileWrite("PUT", { name: "Ada", updatedAt: "1" }), profileWrite("PUT", { name: "Ada", updatedAt: "2" })];
@@ -549,6 +619,30 @@ test("a repeat that differs only in varying fields is benign", () => {
   assert.equal(v.stateChanges, 1);
   assert.equal(v.benignRepeats, 1);
   assert.deepEqual(v.maskedFields, ["updatedAt"]);
+});
+
+test("a repeat that differs only in a redacted field is masked and named as such", () => {
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  // The provider hashes the raw bodies, whose tokens differ, so both writes change state; the ledger keeps both redacted.
+  const writes = [
+    profileWrite("PUT", redactBody({ name: "Ada", requestToken: "tok_1" })),
+    profileWrite("PUT", redactBody({ name: "Ada", requestToken: "tok_2" })),
+  ];
+  const masked = maskRepeats(writes, volatile);
+  assert.deepEqual(masked.entries, [writes[0], { ...writes[1], stateChange: false, benign: MASKED_REPEAT }]);
+  assert.deepEqual(masked.maskedFields, [REDACTED_FIELD]);
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: [catalogEntry(), ...writes] }), profileBase(volatile), {});
+  assert.equal(v.kind, "clean");
+  assert.deepEqual(v.maskedFields, [REDACTED_FIELD]);
+
+  // Nested redacted values count too; a visible difference is named as it is.
+  const nested = [profileWrite("PUT", redactBody([{ auth: { token: "a" } }])), profileWrite("PUT", redactBody([{ auth: { token: "b" } }]))];
+  assert.deepEqual(maskRepeats(nested, volatile).maskedFields, [REDACTED_FIELD]);
+  const stamped = [
+    profileWrite("PUT", redactBody({ name: "Ada", requestToken: "tok_1", updatedAt: "1" })),
+    profileWrite("PUT", redactBody({ name: "Ada", requestToken: "tok_2", updatedAt: "2" })),
+  ];
+  assert.deepEqual(maskRepeats(stamped, volatile).maskedFields, ["updatedAt"]);
 });
 
 test("a repeat that changes a field the baselines agree on is still a state change", () => {
@@ -585,6 +679,28 @@ test("a fixture-answered PUT repeat stays a state change", () => {
     assert.equal(v.kind, "dup");
     assert.equal(v.stateChanges, 2);
   }
+});
+
+test("a write the provider did not apply never anchors a mask", () => {
+  // A conditional PUT refused with 412 stored nothing, so a later write of its body changes the object for real.
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const writes = [
+    profileWrite("PUT", { text: "A", updatedAt: "1" }),
+    profileWrite("PUT", { text: "B", updatedAt: "2" }, { stateChange: false, status: 412 }),
+    profileWrite("PUT", { text: "B", updatedAt: "3" }),
+  ];
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
+  assert.equal(v.kind, "dup");
+  assert.equal(v.stateChanges, 2);
+  assert.equal(v.benignRepeats, 0);
+
+  // A benign repeat still anchors one: the object already held its body.
+  const held = [
+    profileWrite("PUT", { text: "B", updatedAt: "2" }, { stateChange: false, benign: "same request repeated" }),
+    profileWrite("PUT", { text: "B", updatedAt: "3" }),
+  ];
+  assert.deepEqual(maskRepeats(held, volatile).entries, [held[0], { ...held[1], stateChange: false, benign: MASKED_REPEAT }]);
 });
 
 test("a field that varies on another endpoint does not mask this one", () => {

@@ -37,7 +37,8 @@ export interface CellVerdict {
   assumedKeyHosts?: string[];
   /**
    * Body fields that vary between the baselines and were the only difference of a repeated write to the same object,
-   * which therefore counted as a benign repeat.
+   * which therefore counted as a benign repeat; `REDACTED_FIELD` (detect.ts) when the only difference could sit in a
+   * redacted field.
    */
   maskedFields?: string[];
 }

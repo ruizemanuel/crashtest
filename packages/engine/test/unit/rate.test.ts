@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { REDACTED_FIELD } from "../../src/detect.ts";
 import { rateAgent, rateTool } from "../../src/rate.ts";
 import type { CellVerdict, ToolRating } from "../../src/types.ts";
 import { REFUNDS, verdict } from "./builders.ts";
@@ -121,7 +122,29 @@ test("the summary names the fields that were left out", () => {
   assert.equal(rating.benignRepeats, true);
   assert.equal(
     rating.summary,
-    "One state change in every cell; repeated requests did not change provider state. A repeated write went to the same object and differed only in `id` and `sentAt`, which vary between the baselines; the lab assumes the service overwrites the object.",
+    "One state change in every cell; repeated requests did not change provider state. A repeated write went to the same object and differed only in `id` and `sentAt`, which vary between the baselines; the lab counts the later write as an overwrite of that object, not a second effect.",
+  );
+  const one = rate([verdict({ benignRepeats: 1, maskedFields: ["updatedAt"] })]);
+  assert.equal(
+    one.summary,
+    "One state change in every cell; repeated requests did not change provider state. A repeated write went to the same object and differed only in `updatedAt`, which varies between the baselines; the lab counts the later write as an overwrite of that object, not a second effect.",
+  );
+});
+
+test("a repeat that differed only in a redacted field is named without a field name", () => {
+  const hidden = rate([verdict({ benignRepeats: 1, maskedFields: [REDACTED_FIELD] })]);
+  assert.equal(hidden.stars, 5);
+  assert.equal(
+    hidden.summary,
+    "One state change in every cell; repeated requests did not change provider state. A repeated write went to the same object and differed only in a redacted field, whose values the ledger does not keep; the lab counts the later write as an overwrite of that object, not a second effect.",
+  );
+  const both = rate([
+    verdict({ benignRepeats: 1, maskedFields: [REDACTED_FIELD] }),
+    verdict({ cellId: "post-settle", benignRepeats: 1, maskedFields: ["updatedAt"] }),
+  ]);
+  assert.match(
+    both.summary,
+    / differed only in `updatedAt`, which varies between the baselines, or only in a redacted field, whose values the ledger does not keep; the lab counts the later write as an overwrite of that object, not a second effect\.$/,
   );
 });
 
@@ -290,6 +313,7 @@ test("user-facing copy never claims a tool is verified or safe", () => {
     rate(CLEAN),
     rate([verdict({ benignRepeats: 2 })]),
     rate([verdict({ benignRepeats: 1, maskedFields: ["updatedAt"], assumedKeyHosts: ["api.acme.test"] })]),
+    rate([verdict({ benignRepeats: 1, maskedFields: [REDACTED_FIELD, "id", "sentAt"] })]),
     rate([], {}),
   ];
   for (const rating of all) assert.doesNotMatch(`${rating.summary} ${rating.recommendation}`, /verified|safe/i);

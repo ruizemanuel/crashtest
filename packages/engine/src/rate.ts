@@ -1,6 +1,6 @@
 // Turns the verdicts of a tool's cells into its star rating and the fixed report copy, then the tool ratings into
 // the agent's rating. Pure: the copy below is the product's wording, not generated text.
-import { hostOfEndpoint } from "./detect.ts";
+import { REDACTED_FIELD, hostOfEndpoint } from "./detect.ts";
 import { crashCells } from "./matrix.ts";
 import { hostSupportsIdempotency, hostSupportsLookup } from "./preload/catalog.ts";
 import type { CellVerdict, EffectEvidence, NaReason, Stars, ToolRating } from "./types.ts";
@@ -179,12 +179,19 @@ function assumedKeyNote(cells: CellVerdict[]): string {
   return ` The repeats to ${namedList(hosts)} reused an idempotency key, which those hosts are assumed to honor: the fake provider does not model them.`;
 }
 
-/** What a rating that rests on repeated writes counted as benign because they changed only varying fields must say. */
+/**
+ * What a rating that rests on repeated writes counted as benign because they changed only varying fields, or only a
+ * redacted field, must say. True for a host the lab assumes to overwrite and for Vercel Blob, whose overwrite it models.
+ */
 function maskedNote(cells: CellVerdict[]): string {
   const fields = [...new Set(cells.flatMap((cell) => cell.maskedFields ?? []))].sort();
   if (fields.length === 0) return "";
-  const named = namedList(fields.map((field) => `\`${field}\``));
-  return ` A repeated write went to the same object and differed only in ${named}, which vary between the baselines; the lab assumes the service overwrites the object.`;
+  const visible = fields.filter((field) => field !== REDACTED_FIELD);
+  const differences = [
+    ...(visible.length === 0 ? [] : [`${namedList(visible.map((field) => `\`${field}\``))}, which ${visible.length === 1 ? "varies" : "vary"} between the baselines`]),
+    ...(fields.includes(REDACTED_FIELD) ? [`${REDACTED_FIELD}, whose values the ledger does not keep`] : []),
+  ];
+  return ` A repeated write went to the same object and differed only in ${differences.join(", or only in ")}; the lab counts the later write as an overwrite of that object, not a second effect.`;
 }
 
 /**
