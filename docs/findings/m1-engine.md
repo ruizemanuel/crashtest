@@ -26,6 +26,13 @@ Update (2026-11-27, engine at `8e7ebbc`): the S5 bullets above ("No tool of the 
 eve version message. Only the gaps "S5 after the engine hardening" lists remain open. The decision there is still
 FALLBACK, for a new reason: the three 2-star ratings are repeats that the real store absorbs (engine finding 1).
 
+Update (2026-11-27, engine at `cd994e2`): on the SRE template, `create_skill`, `watch_slack_channel` and
+`unwatch_slack_channel` now get 5 stars with benign repeats (Vercel Blob is modeled per object, and the template
+overwrites with `allowOverwrite: true`). `delete_skill` is not evaluated because its baseline failed (the skill to
+delete is not found), and the other seven tools are not evaluated (no effect). Engine findings 1, 3 and 4 of "S5 after
+the engine hardening" are resolved and finding 2 is resolved in part. The decision is now PRIMARY (see "S5 after the
+pre-M3 batch").
+
 ## Engine verification
 
 ### Call id and turn id across a replay
@@ -406,6 +413,155 @@ call again, so no attempt read the guard's record. stdout: `In lab: watch_slack_
 ledger-guard (6 runs, eve 1.2.0)`, followed by the trade-off and store lines.
 
 **Decision: FALLBACK** — the three 2-star ratings are repeats that the real store absorbs: `create_skill` and `watch_slack_channel` PUT the same object again with `allowOverwrite: true`, in a body that differs only in fields the two baselines mark as varying (the fake provider hashes the raw body instead of masking those fields first), and `unwatch_slack_channel` repeats a delete of an object that is already gone (engine finding 1). The reference agent `examples/acme-support` leads the demo until finding 1 is fixed and S5 is run again on the SRE template, which is when the decision can become PRIMARY.
+
+## S5 after the pre-M3 batch
+
+This section's decision and its reasons replace those of "S5 after the engine hardening" above.
+
+The SRE template at the same commit, run again on 2026-11-27 with the engine at commit `cd994e2` (Windows 10, Node
+24.15.0, scripted mock model and fake provider: no tokens were spent and no request left the machine). The scratch
+clone of the earlier section, outside this repository, was used again: it is at `b2ef701` with the dependencies of
+its `pnpm install --frozen-lockfile` (eve 1.2.0, `@vercel/blob` 2.4.0), and the earlier configuration and output were
+moved out of it first. Nothing was posted to the template repository, no real credentials were used, and the template
+source is unchanged: `git status` shows only `crashtest.config.json` and `.crashtest/`. The triage template was not
+run again; its lockfile still pins eve 0.7.4.
+
+**Regression.** `pnpm test:e2e` from `packages/engine` at `cd994e2` exited 0 after 3695 s (61.6 min): 37 tests, 36
+pass, none fails and 1 is skipped ("SIGINT leaves no listener behind", which runs only on POSIX). The twelve earlier
+zoo ratings are unchanged (`naive` 1, `fs_effect` 1, `approval_naive` 2, `callid_guard` 3, `phantom_failure` 4,
+`opkey_guard`, `upstream_key`, `benign_labels` and `check_before_act` 5, `readonly` and `post_reads` not evaluated: no
+effect, `session_auth` not evaluated: baseline failed without an identity, and 1 star with one). The five new zoo
+tools rate as intended: `put_timestamped` (a PUT that stamps the time on one object) and `blob_overwrite` (a Vercel
+Blob put with `allowOverwrite`) get 5 stars with benign repeats; `blob_default` (a put with the default options, which
+the store refuses once the first upload happened) gets 4 stars; `refuses_as_value` is not evaluated (baseline failed)
+with the auth hint; `strict_input` is not evaluated (baseline failed) with the input hint and gets 1 star with its
+input. acme still goes from 1 to 5 stars, and ledger-guard still takes `naive` from 1 to 5 stars in the fix test.
+
+| Template | Commit | eve installed | `@vercel/blob` | Config | `crashtest plan` | `crashtest run` |
+|---|---|---|---|---|---|---|
+| `vercel-labs/eve-sre-agent-template` | `b2ef701` | 1.2.0 | 2.4.0 | 21 lines | exit 0 after 20 s: 11 tools, 66 cells | exit 0 after 625 s (10.4 min), 34 runs |
+
+### SRE configuration
+
+21 lines with three keys, made from the earlier 24-line configuration:
+
+- `auth`: the engine README's example identity as it is, `{"authenticator": "slack-webhook", "issuer":
+  "slack:T0CRASHTEST", "principalType": "user", "principalId": "slack:T0CRASHTEST:U0CRASHTEST", "attributes":
+  {"author_type": "user", "channel_id": "C0CRASHTEST", "team_id": "T0CRASHTEST", "user_id": "U0CRASHTEST"}}`. It
+  passes the template's `resolveSlackUser` (`agent/lib/auth.ts:15-33`: authenticator, principal type, a non-empty
+  principal id, `attributes.team_id`, and `issuer` equal to `slack:<team_id>`). With this principal id the user-scoped
+  skill prefix is `sre-custom-skills/users/slack-t0crashtest-u0crashtest/`, and a watch record's `watchedBy` is
+  `slack:T0CRASHTEST:U0CRASHTEST`.
+- `env`: the same two fakes as before, an unsigned `VERCEL_OIDC_TOKEN` with a far-future expiry and a
+  `BLOB_READ_WRITE_TOKEN` in the `vercel_blob_rw_<store>_<secret>` shape (store `crashtest`).
+- `scenarios`: the same six inputs.
+- No `fixtures`: the Blob listing fixture is gone. The fake provider's Blob catalog answers the two listings that the
+  template's custom-skill resolver makes at the start of every turn (`GET vercel.com/api/blob?prefix=…&mode=expanded`,
+  global and user prefix) with the stored objects, none in a fresh run, and `list_skills` returns
+  `{"count": 0, "skills": [], "success": true}`.
+
+### Per tool
+
+`crashtest run` on the clone: exit 0, 34 runs, 625 s (10.4 min), `Agent rating: ★★★★★ (5/5) · 3 of 11 tools evaluated
+· In lab: 34 cells · eve 1.2.0 · commit b2ef701+dirty` (the untracked configuration makes the clone dirty). Every
+crash cell was clean, so no confirmation run was needed (the earlier run had 40 runs). Cells took 12 to 15 s
+(baseline), 25 s (post-effect-fast), 27 to 28 s (post-effect-slow) and 34 to 39 s (post-settle).
+
+| Tool | Before (S5 after the engine hardening) | Now | Runs | Wall s | Blob write and its options | Blob behavior the rating relies on |
+|---|---|---|---|---|---|---|
+| `create_skill` | 2 stars: dup (stable), dup (fresh), clean (abandoned), clean (abandoned); 8 runs, 192.5 s | 5 stars, benign repeats: clean (1 benign) in both fast cells, clean (abandoned) in slow and post-settle | 6 | 141.5 | `put(pathname, content, { access: "private", addRandomSuffix: false, allowOverwrite: true, contentType: "application/json" })` at `agent/lib/blob.ts:40-45`, called from `agent/lib/skills/store.ts:196-199`; the body's `updatedAt` is set at `store.ts:193` | A put with `allowOverwrite: true` and no random suffix replaces the object at its pathname: the repeat is not refused and leaves one object, with the later `updatedAt` |
+| `watch_slack_channel` | 2 stars: same four verdicts; 8 runs, 194.0 s | 5 stars, benign repeats: the same four verdicts as `create_skill` | 6 | 142.7 | the same `put` at `agent/lib/blob.ts:40-45`, called from `agent/lib/channel-watch/store.ts:77`; the body's `watchedAt` is set at `store.ts:74` | the same overwrite, with the later `watchedAt` |
+| `unwatch_slack_channel` | 2 stars: same four verdicts; 8 runs, 190.2 s | 5 stars, benign repeats: the same four verdicts as `create_skill` | 6 | 137.9 | `del(pathname)` with no options (no `ifMatch`) at `agent/lib/blob.ts:15`, called from `agent/lib/channel-watch/store.ts:89` | a delete of an object that is gone succeeds and changes nothing (Vercel's `del()` reference: it "won't throw if the blob url doesn't exist"); the one state change is the first delete of an object the lab never saw, which the lab takes as existing |
+| `delete_skill` | not evaluated: no external effect; the skill to delete is not found; 2 runs, 27.1 s | not evaluated: baseline failed; the reason quotes the refusal `No global skill named "crashtest-name" was found.` and gives the general hint (`scenarios.delete_skill.input`, `auth`, `env` and `fixtures`) | 2 | 27.1 | — | — |
+| `evidence_list` | not evaluated: no external effect; 2 runs, 25.1 s | not evaluated: no external effect (reads eve session state) | 2 | 24.5 | — | — |
+| `evidence_record` | not evaluated: no external effect; 2 runs, 24.8 s | not evaluated: no external effect (writes eve session state) | 2 | 24.4 | — | — |
+| `evidence_remove` | not evaluated: no external effect; 2 runs, 24.8 s | not evaluated: no external effect (eve session state; `not_found` in a fresh turn) | 2 | 24.7 | — | — |
+| `list_skills` | not evaluated: no external effect (Blob listings only); 2 runs, 24.8 s | not evaluated: no external effect (Blob listings only, now answered by the catalog) | 2 | 24.6 | — | — |
+| `read_slack_user` | not evaluated: no external effect; 2 runs, 24.8 s | not evaluated: no external effect (`users.info` sent as POST is a read) | 2 | 24.5 | — | — |
+| `slack_read_channel_messages` | not evaluated: no external effect; 2 runs, 24.9 s | not evaluated: no external effect (`conversations.history` sent as POST is a read) | 2 | 24.6 | — | — |
+| `slack_read_thread` | not evaluated: no external effect; 2 runs, 24.6 s | not evaluated: no external effect (`conversations.replies` sent as POST is a read) | 2 | 24.4 | — | — |
+
+- **What the three rated tools repeat.** The same objects as before: `create_skill` PUTs
+  `sre-custom-skills/global/crashtest-name.json`, `watch_slack_channel` PUTs
+  `sre-channel-watch/T0CRASHTEST/C0CRASHTEST.json` (after the Vercel Connect token POST and the `conversations.info`
+  POST, both `mutating: false`), and `unwatch_slack_channel` POSTs
+  `{"urls": ["sre-channel-watch/T0CRASHTEST/C0CRASHTEST.json"]}` to `vercel.com/api/blob/delete`. In both fast cells
+  eve replayed the approved call (`mock-tool-call-2-0-1-1` in the stable cell; one call
+  `ct-call-1-<pid of the killed process>` in the fresh cell, with the same input text in both writes), and after the
+  restart the tool wrote the same object again.
+- **Why the repeats are benign.** For a put, `@vercel/blob` 2.4.0 sends the two options as `x-add-random-suffix: 0`
+  and `x-allow-overwrite: 1`, and the fake provider answered the second put with 200 (without the overwrite option
+  it refuses a put to a stored object with "This blob already exists, use allowOverwrite: true to overwrite it"). The
+  ledger keeps that put as a state change, since its body differs in `updatedAt` (`watchedAt` for
+  `watch_slack_channel`). The two baselines show that field as varying on `PUT vercel.com/api/blob/`, and the put names
+  its object (`vercel-blob:<pathname>`), so the cell counts it as a benign repeat, and the summary says what that
+  rests on: "A repeated write went to the same object and differed only in `updatedAt`, which vary between the
+  baselines; the lab assumes the service overwrites the object." For `unwatch_slack_channel` the second delete is
+  benign in the fake provider itself (`objects already deleted`), which also shows that the provider state outlived
+  the crash.
+- **post-effect-slow and post-settle are clean (abandoned)** for all three, as before: eve recovered the approved call
+  as interrupted, and the scripted model did not issue it again. So no cell of this run sent the call again with
+  reworded text. If a real model issued `create_skill` again with a reworded `description` (a free-text field that
+  does not vary between the baselines), the lab would count the second put as a state change, although the store
+  would overwrite the same object; this run does not exercise that case.
+- **`delete_skill`** reads the skill before it deletes it (`agent/lib/skills/store.ts:231-237`), with
+  `get(pathname, { access: "private", useCache })` (`agent/lib/blob.ts:29-38`). In `@vercel/blob` 2.4.0 that is a GET of
+  `crashtest.private.blob.vercel-storage.com/sre-custom-skills/global/crashtest-name.json`, which gets the generic
+  answer. The template logs `skipping malformed skill`, finds no skill, sends no delete and returns
+  `{"error": "No global skill named \"crashtest-name\" was found.", "success": false}`. The refusal names no
+  authorization or input problem, so the reason gets the general hint.
+- **The crash point skips the reads**, as before: in every crash cell of `watch_slack_channel` the crash came right
+  after the Blob PUT, the first request that is an effect.
+
+### Engine findings of the earlier section
+
+1. **A repeated write of one object on a host outside the catalog: resolved for Vercel Blob.** Blob is in the
+   catalog, a put names its object by `pathname`, a repeated overwrite that differs only in the baselines' varying
+   fields is a benign repeat, and a second delete of a deleted object is a benign repeat; the three 2-star ratings are
+   now 5 stars. The catalog tells writes to different objects apart by `pathname`, so the same body put to another
+   object is no longer read as a repeat. What remains: on hosts outside the catalog, an object is still its path
+   without the query, and only top-level keys of object bodies are masked.
+2. **The fake provider keeps no Blob objects: resolved in part.** It now keeps the objects of a run across the crash
+   and answers head and list from them. It does not serve their content, and no object can be stored before a turn,
+   so `delete_skill` still finds no skill to delete. Its reason is now a failed baseline that quotes the refusal,
+   instead of "no external effect".
+3. **A refusal returned as a value: resolved.** Besides `delete_skill` above, a probe of `watch_slack_channel` with
+   the identity of the earlier README example (no `issuer`; `crashtest lane`, 2 runs, 27.3 s) is not evaluated
+   (baseline failed) with the auth hint: "the call returned a refusal: Authorization denied: not in a Slack context —
+   set auth or scenarios.watch_slack_channel.auth in crashtest.config.json to give the lab session the identity this
+   tool checks". With that identity the earlier section got "no external effect" and no hint.
+4. **A call the AI SDK rejects for its input: resolved, also on eve 1.2.0.** A probe of `evidence_remove` with its
+   generated input (`{"evidenceId": "evidenceId_ct_1"}`; `crashtest lane`, 2 runs, 25.1 s) is not evaluated (baseline
+   failed) with the input hint: "the call was rejected before evidence_remove ran: AI_InvalidToolInputError: Invalid
+   input for tool evidence_remove: … must match pattern /^evidence-\d+$/u — set scenarios.evidence_remove.input in
+   crashtest.config.json". What remains: generated inputs do not honor `pattern`, so the configuration still needs
+   the input.
+
+Both probes ran after the run, each with its own configuration file outside the clone (`--config`); the report
+covers the run only.
+
+### Engine bugs (reported, not fixed)
+
+None found: every verdict and every reason follows the README's rules. One reporting gap: the 5-star summary of
+`unwatch_slack_channel` ("One state change in every cell; repeated requests did not change provider state.") does
+not say that its one state change is the delete of an object the lab never saw and takes as existing (the README
+Limits say it), while the summaries of the other two tools name the assumption their benign repeats rest on. If the
+channel was not watched in the real store, the first delete changes nothing and the repeat changes nothing either,
+so the rating would not change.
+
+### Decision
+
+1. **The full regression passed: holds.** `pnpm test:e2e` exited 0 with the zoo and acme ratings above.
+2. **An SRE tool with an external effect gets a star rating, with at most 30 configuration lines: holds.** Three do,
+   with 21 lines.
+3. **No rating below 5 stars counts a repeat that the real store absorbs: holds.** No SRE rating is below 5 stars;
+   `delete_skill` and the seven tools without an effect are not evaluated, which is neither a rating nor a pass.
+4. **No benign verdict rests on a repeat that the real store would refuse or duplicate: holds.** The benign repeats
+   are a put with `allowOverwrite: true` and `addRandomSuffix: false` (`agent/lib/blob.ts:40-45`), which the store
+   applies as an overwrite of the same object, and a `del()` without `ifMatch` (`agent/lib/blob.ts:15`), which the
+   store accepts for an object that is gone.
+
+**Decision: PRIMARY** — all four conditions hold: the SRE template's three Blob write tools get 5 stars with a 21-line configuration, and every benign repeat behind those ratings is an overwrite or a delete that the real store absorbs, given the write options in the template source. The template appears in the demo as the real case, rated as it is here, and `examples/acme-support` still carries the story from 1 to 5 stars.
 
 ## M2 fix verification
 
