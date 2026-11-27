@@ -323,8 +323,9 @@ Some requests are reads that providers receive as POST, which are not effects: t
 `team.info`, `bots.info`, `chat.getPermalink`, `reactions.get`, `pins.list`, `search.messages` and `files.info`,
 sent as GET or POST), the Vercel Connect token exchange (`POST api.vercel.com/v1/connect/token/...`), the GitHub App
 installation token (`POST api.github.com/app/installations/<id>/access_tokens`), and a GraphQL query on any host (a
-POST to a path that ends in `/graphql` whose `query` document has no `mutation` or `subscription` operation; any
-other GraphQL POST is an effect, and so is a document the lab cannot read to its end). They stay in the ledger, but
+POST to a path that ends in `/graphql` whose `query` document has at least one query operation and no `mutation` or
+`subscription` operation; any other GraphQL POST is an effect: one whose `query` is empty or only comments, as a
+client of persisted queries sends it, and a document the lab cannot read to its end). They stay in the ledger, but
 they are not counted and never trigger a cell's crash point. The fake provider answers them without a state change:
 `conversations.history` and `conversations.replies` list the messages posted to the channel, newest first, and a
 fixture on one of them is not an effect either. `effects.ignore` still covers any other request that is not an effect

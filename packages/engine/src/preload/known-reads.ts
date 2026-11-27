@@ -70,13 +70,18 @@ function graphqlStringEnd(text: string, start: number): number {
 }
 
 /**
- * Whether a GraphQL document may write: a `mutation` or `subscription` name at its top level, outside every `{}`,
- * `()` and `[]`, every string and every `#` comment. A document that cannot be read to its end (an unclosed string or
- * bracket) counts as one that writes.
+ * Whether a GraphQL document may write. It reads only when it has at least one query operation (a selection set
+ * opened at its top level, after `query` or on its own) and no `mutation` or `subscription` name at its top level,
+ * outside every `{}`, `()` and `[]`, every string and every `#` comment. A document without an operation (empty, only
+ * comments, only fragments) may stand for a persisted operation named by hash or id, and a document that cannot be
+ * read to its end (an unclosed string or bracket) may be anything: both count as one that writes.
  */
 function graphqlMayWrite(document: string): boolean {
   let depth = 0;
   let i = 0;
+  // The first name of the current top-level definition (`query`, `fragment`, ...), undefined before it.
+  let keyword: string | undefined;
+  let operations = 0;
   while (i < document.length) {
     const char = document.charAt(i);
     if (char === "#") {
@@ -85,20 +90,27 @@ function graphqlMayWrite(document: string): boolean {
       i = graphqlStringEnd(document, i);
       if (i === -1) return true;
     } else if (GRAPHQL_OPEN.has(char) || GRAPHQL_CLOSE.has(char)) {
+      if (char === "{" && depth === 0) {
+        if (keyword === undefined || keyword === "query") operations++;
+        keyword = undefined;
+      }
       depth += GRAPHQL_OPEN.has(char) ? 1 : -1;
       if (depth < 0) return true;
       i++;
     } else {
       GRAPHQL_NAME.lastIndex = i;
       const name = GRAPHQL_NAME.exec(document)?.[0];
-      if (name !== undefined && depth === 0 && GRAPHQL_WRITES.has(name)) return true;
+      if (name !== undefined && depth === 0) {
+        if (GRAPHQL_WRITES.has(name)) return true;
+        keyword ??= name;
+      }
       i += name?.length ?? 1;
     }
   }
-  return depth !== 0;
+  return depth !== 0 || operations === 0;
 }
 
-/** A body with a `query` text that has no `mutation` or `subscription` operation. */
+/** A body with a `query` text that has a query operation and no `mutation` or `subscription` operation. */
 function isGraphqlQuery(body: unknown): boolean {
   return isRecord(body) && typeof body.query === "string" && !graphqlMayWrite(body.query);
 }

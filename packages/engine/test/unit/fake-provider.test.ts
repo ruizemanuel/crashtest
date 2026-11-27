@@ -259,6 +259,34 @@ test("a GraphQL document with a mutation or subscription anywhere at its top lev
   for (const text of effects) assert.equal(p.handle(post(url, { query: text })).effect.mutating, true, text);
 });
 
+test("a GraphQL body whose query text has no operation is an effect, also with a persisted query or a document id", () => {
+  const p = createFakeProvider(null);
+  const url = "https://api.linear.test/graphql";
+  const persisted = { persistedQuery: { version: 1, sha256Hash: "0f3cbe9b7d1a" } };
+  // A persisted or trusted-document client names its operation by hash or id, so an empty text can be a mutation.
+  const bodies: unknown[] = [
+    { query: "" },
+    { query: " \n\t " },
+    { query: "# mutation CreateIssue" },
+    { query: "# one\r\n# two\n" },
+    { query: "", operationName: "CreateIssue", extensions: persisted },
+    { query: "  ", documentId: "CreateIssue" },
+    { query: "", documentId: "CreateIssue" },
+    { operationName: "CreateIssue", extensions: persisted },
+    { query: 42, documentId: "CreateIssue" },
+    // Without a selection set of a query there is no operation either.
+    { query: "query" },
+    { query: "fragment F on Issue { id }" },
+  ];
+  const reads = bodies.filter((body) => !p.handle(post(url, body)).effect.mutating);
+  assert.deepEqual(reads, []);
+  // A body that is not a JSON object is not read either: a raw document or a batch.
+  assert.equal(p.handle(post(url, "{ viewer { id } }", { "content-type": "application/graphql" })).effect.mutating, true);
+  assert.equal(p.handle(post(url, [{ query: "{ viewer { id } }" }])).effect.mutating, true);
+  // A persisted query sent with its text is judged by the text.
+  assert.equal(p.handle(post(url, { query: "query Viewer { viewer { id } }", extensions: persisted })).effect.mutating, false);
+});
+
 test("a known read needs its own host, path and method", () => {
   const p = createFakeProvider(null);
   // The GraphQL rule holds on any host, also on one that has other known reads.
