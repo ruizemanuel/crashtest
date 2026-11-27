@@ -230,6 +230,172 @@ token).
 
 **Decision: FALLBACK** — none of the three real-template tools can be rated in the lab today (two need channel sessions the lab cannot create, one only changes eve session state, and the triage template does not run as published), so the reference agent leads the demo.
 
+## S5 after the engine hardening
+
+The same two templates at the same commits, run again on 2026-11-27 with the engine at commit `8e7ebbc` (Windows 10,
+Node 24.15.0, scripted mock model and fake provider: no tokens were spent and no request left the machine). Each
+template was cloned again into its own scratch directory outside this repository. Nothing was posted to either
+repository, no real credentials were used, and the template source is unchanged: `git status` shows only
+`crashtest.config.json` and `.crashtest/` in the SRE clone and nothing in the triage clone.
+
+**Regression.** `pnpm test:e2e` from `packages/engine` at `8e7ebbc` exited 0 after 54.8 min: 31 tests, 30 pass and
+1 is skipped (the Windows-only skip of "SIGINT leaves no listener behind"). The ten earlier zoo ratings are unchanged
+(`naive` 1, `fs_effect` 1, `approval_naive` 2, `callid_guard` 3, `phantom_failure` 4, `opkey_guard`, `upstream_key`,
+`benign_labels` and `check_before_act` 5, `readonly` not evaluated: no effect), and acme still goes from 1 to 5 stars.
+The two new zoo tools rate as intended: `post_reads`, whose only requests are reads sent as POST, is not evaluated (no
+effect), and `session_auth`, which checks the session identity, is not evaluated (baseline failed) without an
+identity and gets 1 star with one.
+
+| Template | Commit | eve installed | Install | Config | `crashtest plan` |
+|---|---|---|---|---|---|
+| `vercel-labs/eve-sre-agent-template` | `b2ef701` | 1.2.0 | `pnpm install --frozen-lockfile`, exit 0 | 24 lines | exit 0: 11 tools, 66 cells |
+| `vercel-labs/eve-pr-triage-agent-template` | `5f3d0ac` | 0.7.4 | `npm ci`, exit 0 | none | exit 1 after 0.5 s, before a lab exists: `crashtest: eve 0.7.4 is installed for <dir>, but crashtest needs eve 1.2.0 or later (older versions lack mockModel in eve/evals and eve dev --resume): upgrade eve in the app` |
+
+### SRE configuration
+
+24 lines with four keys:
+
+- `auth`: `{"authenticator": "slack-webhook", "principalType": "user", "principalId": "U0CRASHTEST", "issuer":
+  "slack:T0CRASHTEST", "attributes": {"team_id": "T0CRASHTEST"}}`. That is the engine README's example identity plus
+  `issuer`: the template's `resolveSlackUser` also requires `issuer` to be `slack:<team_id>`. With the README example
+  as it is, `watch_slack_channel` still answers `Authorization denied: not in a Slack context` (2 baselines, 33 s).
+- `env`: a fake unsigned `VERCEL_OIDC_TOKEN` (header `{"alg":"none","typ":"JWT"}`, payload `{"exp":4102444800}`,
+  empty signature), which Vercel Connect needs before it asks for the Slack bot token, and a fake
+  `BLOB_READ_WRITE_TOKEN` in the shape `@vercel/blob` parses (`vercel_blob_rw_<store>_<secret>`, store `crashtest`).
+- `fixtures`: `GET https://vercel.com/api/blob?*` answers an empty listing (`{"blobs": [], "hasMore": false}`). With a
+  Blob token, every turn first lists the custom skills (two GETs, global and user prefix); the generic answer `{}`
+  made the template log `custom skills unavailable` on every turn and made `list_skills` return an error object.
+- `scenarios`: an input for each of six tools whose generated input the template rejects: Slack ids (`C0CRASHTEST`,
+  `U0CRASHTEST`), a Slack timestamp (`1712606400.000100`) and an evidence id (`evidence-1`).
+
+### Per tool
+
+`crashtest run` on the SRE clone: exit 0, 40 runs, 781 s (13.0 min), `Agent rating: ★★☆☆☆ (2/5) · 3 of 11 tools
+evaluated · In lab: 40 cells · eve 1.2.0 · commit b2ef701+dirty` (the untracked configuration makes the clone dirty).
+Cells took 12 to 14 s (baseline), 25 s (post-effect-fast), 27 s (post-effect-slow) and 34 to 40 s (post-settle,
+which adds 2.5 s of latency to every request; `watch_slack_channel` makes three).
+
+| Tool | Before (earlier S5) | Now | Runs | Wall s |
+|---|---|---|---|---|
+| `create_skill` | not run | 2 stars: dup (stable), dup (fresh), clean (abandoned), clean (abandoned) | 8 | 192.5 |
+| `unwatch_slack_channel` | not run | 2 stars: same four verdicts | 8 | 190.2 |
+| `watch_slack_channel` | not evaluated: no external effect, stopped at the Slack-context check (2 runs, 27.3 s) | 2 stars: same four verdicts | 8 | 194.0 |
+| `delete_skill` | not run | not evaluated: no external effect; the skill to delete is not found (see engine finding 2) | 2 | 27.1 |
+| `evidence_list` | not run | not evaluated: no external effect (reads eve session state) | 2 | 25.1 |
+| `evidence_record` | not evaluated: no external effect (2 runs, 24.7 s) | not evaluated: no external effect (writes eve session state) | 2 | 24.8 |
+| `evidence_remove` | not run | not evaluated: no external effect (eve session state; `not_found` in a fresh turn) | 2 | 24.8 |
+| `list_skills` | not run | not evaluated: no external effect (Blob listings only) | 2 | 24.8 |
+| `read_slack_user` | not run | not evaluated: no external effect (`users.info` sent as POST is a read) | 2 | 24.8 |
+| `slack_read_channel_messages` | 1 star, wrong for a read (10 runs, 249.7 s); not evaluated only with `effects.ignore` | not evaluated: no external effect, without `effects.ignore` | 2 | 24.9 |
+| `slack_read_thread` | not run | not evaluated: no external effect (`conversations.replies` sent as POST is a read) | 2 | 24.6 |
+| `apply_labels` (triage) | not evaluated: baseline failed, on eve 1.5.0 after three source changes | not run: `plan` refuses the locked eve 0.7.4 | — | — |
+
+- **What the three rated tools repeat.** Each writes one Vercel Blob object at a fixed path. `create_skill` PUTs
+  `sre-custom-skills/global/crashtest-name.json`; `watch_slack_channel` PUTs
+  `sre-channel-watch/T0CRASHTEST/C0CRASHTEST.json`, after the session check and a `conversations.info` read that the
+  fake provider answers with `is_member: true`; `unwatch_slack_channel` POSTs
+  `{"urls": ["sre-channel-watch/T0CRASHTEST/C0CRASHTEST.json"]}` to `vercel.com/api/blob/delete`. When eve replays
+  the step, the tool writes the same object again: the PUT body differs only in `updatedAt` or `watchedAt`, which the
+  two baselines already show as varying, and the delete body is the same. Vercel Blob is outside the fake provider's
+  catalog, where every POST counts and a PUT counts unless its body is the same, so each repeat is a second state
+  change, 2 of 2 in both fast cells, and a same-id repeat of a tool that requires approval is 2 stars. The rating is
+  what the lab measured: the tool ran twice and wrote twice. In the real store the second write overwrites the same
+  object with a later timestamp, or deletes an object that is already gone; no second record appears (engine
+  finding 1).
+- **post-effect-slow and post-settle are clean (abandoned)** for all three, as for `approval_naive`: eve recovered the
+  approved call as interrupted, and the scripted model did not issue it again. The fresh cell replayed the approved
+  call with its id and its text (one call in the stream, `ct-call-1-<pid of the killed process>`, and the same
+  `description` in both PUTs of `create_skill`), as `approval_naive`'s fresh cell does in the zoo, so its
+  `dup (fresh)` is a same-id replay too. The stars come from the stable cell either way.
+- **The crash point skips the reads.** In every crash cell of `watch_slack_channel` the ledger holds the Vercel Connect
+  token POST and the `conversations.info` POST with `mutating: false`, and the crash came right after the Blob PUT,
+  the first request that is an effect. In the earlier S5 the crash fired on the token exchange.
+- **Requests the template makes on its own.** As before, the extension, the connections and the channels made no
+  request at startup. With a Blob token, the template's custom-skill resolver lists two Blob prefixes at the start of
+  every turn (GETs, so no effect); `delete_skill` adds a GET of the skill object.
+
+### Blockers of the earlier section
+
+1. **Session auth: resolved.** The top-level `auth` key gives every lab session the configured identity, and
+   `create_skill`, `watch_slack_channel` and `unwatch_slack_channel` pass the template's Slack check and reach their
+   write. What remains: the identity must match what the tool checks. The README example lacks `issuer`, which this
+   template compares with `slack:<team_id>`, and with the example as it is the tool refuses and crashtest reports "no
+   external effect" with no hint (engine finding 3). A GitHub identity could not be tried, because the triage
+   template does not run.
+2. **Reads sent as POST: resolved for Slack and Vercel Connect.** `slack_read_channel_messages`, `slack_read_thread`
+   and `read_slack_user` are not evaluated (no effect) without any `effects.ignore`, so the earlier workaround is no
+   longer needed for them. Their ledgers keep the Connect token POST and the Slack read POST, both with
+   `mutating: false`, the progress lines report 0 effects for their baselines, and the crash point skips both reads
+   (see above). What remains: on a host outside the catalog every POST is still an effect, also one that changes
+   nothing, such as a second Vercel Blob delete of the same object (engine finding 1).
+3. **`disableTool()` files: resolved in discovery, not shown on a template.** Discovery skips an unlisted file that
+   calls `disableTool(` (unit test "a file that only disables a framework tool is neither a tool nor skipped"). The
+   SRE template has no such file, and on the triage template `plan` stops at the eve version check, before
+   discovery.
+4. **No minimum eve version: resolved.** `plan` on the triage template exits 1 with the version message above
+   instead of the overlay's module-resolution error, after 0.5 s and before any lab is created.
+5. **Generic baseline hint: resolved for the tool's own error, with one gap.** The auth and input hints now come only
+   from the error of the tool call itself, as the zoo's `session_auth` shows (baseline failed without an identity, with
+   the auth hint). On the SRE template no baseline failed once the inputs were set. With its generated input
+   (`evidenceId_ct_1`), `evidence_remove` failed both baselines, but the AI SDK rejected the input before the tool
+   ran (`AI_InvalidToolInputError: Invalid input for tool evidence_remove`), eve recorded no call, and crashtest gave
+   the reason "the model never called evidence_remove" with the general hint, which does name
+   `scenarios.evidence_remove.input` (engine finding 4).
+
+Blocker 6 (the triage template is behind eve) is unchanged: its lockfile still pins eve 0.7.4.
+
+### Engine findings (reported, not fixed)
+
+1. **A repeated write of one object counts as a second state change on a host outside the catalog.** The fake
+   provider treats `vercel.com/api/blob` generically: a PUT is a state change unless its body is the same as an
+   earlier one, and every POST is. A PUT whose body differs only in a field that the two baselines show as varying
+   (`updatedAt`, `watchedAt`) therefore counts again, and so does a second POST to `/api/blob/delete` with the same
+   body. Besides, the generic PUT slot is the host and path without the query, and Blob names the object in the
+   query (`?pathname=`), so the lab does not tell writes to different objects apart either: the same body PUT to
+   another object would read as a benign repeat. Possible fixes: model Vercel Blob in the catalog (a PUT by
+   `pathname` as an overwrite, a delete as idempotent, a GET by object), or treat a PUT repeat whose body differs
+   only in the baselines' varying fields as benign. Until then, the three 2-star ratings above say that a crash makes
+   the tool write twice, not that it creates a second record.
+2. **The fake provider keeps no Blob objects**, so `delete_skill` finds no skill to delete
+   (`No global skill named "crashtest-name" was found.`) and makes no effect. A fixture cannot stand in: it is
+   stateless and would still return the skill after the delete, so the lab would show a second delete that a real
+   replay does not make. On a real replay the GET finds the object gone and the tool answers that the skill was not
+   found, after it deleted it; the lab cannot show that either (finding 3).
+3. **A refusal returned as a value reads as "no external effect".** The SRE tools return
+   `{"success": false, "error": ...}` instead of throwing, so a session check that refuses the lab identity completes
+   the call, the baseline has no effect, and the reason gets no hint. A reason that mentions a baseline output with
+   `success: false` or an `error` field would point at `auth` or the input.
+4. **A call that the AI SDK rejects for its input is not a call in eve's stream.** eve 1.2.0 sends the
+   `AI_InvalidToolInputError` back to the model (it is in the session's trace), but the stream has no `call.requested`
+   or `call.settled` for it, so crashtest says that the model never called the tool and gives the general hint
+   instead of the input hint.
+
+### Other checks
+
+- **Lab channel shim on eve 1.2.0: works.** The shim (`localDev` from `eve/channels/auth`, `eveChannel` from
+  `eve/channels/eve`) compiled in discovery and in all 40 runs plus the probes, every baseline turn completed, and the
+  configured identity reached `ctx.session.auth.current`: the three write tools passed `resolveSlackUser`, which
+  checks the authenticator, the principal type, the principal id, `attributes.team_id` and `issuer`.
+- **Channel files.** The SRE template has `agent/channels/eve.ts`, `slack.ts` and `webhook.ts`; the triage template
+  has `agent/channels/eve.ts` and `github.ts`. Neither has an `eve.mjs` or `eve.js`, so the case where the overlay
+  writes its `eve.ts` next to an app's own JavaScript eve channel does not occur in either template. In the SRE lab
+  the original channel (which already accepts only `localDev()` callers) was kept as `eve.ctorig.spec.ts`.
+
+### Extra probe: `crashtest fix` on `watch_slack_channel`
+
+`crashtest fix --tool watch_slack_channel --report .crashtest/report.json` without `--apply`, so the clone stayed as
+it was: exit 0 after 355 s. The report was ignored ("made on uncommitted changes": the untracked configuration), so a
+fresh lane rated the tool 2 stars again, with the same four verdicts. upstream-key did not apply (no fetch call to an
+idempotency-capable host). ledger-guard changed `agent/tools/watch_slack_channel.ts` and added
+`agent/lib/crashtest-idempotency.ts`, imported as `../lib/crashtest-idempotency.ts` because the template's
+`tsconfig.json` sets `NodeNext` with `allowImportingTsExtensions`, and the patch passed the type check against that
+`tsconfig.json` (strict). Its lane: 5 stars in 6 runs (143.9 s), every crash cell clean (abandoned). As with
+`post_slack_update` in M2, eve recovered each call as interrupted and the scripted model did not issue the approved
+call again, so no attempt read the guard's record. stdout: `In lab: watch_slack_channel ★★☆☆☆ → ★★★★★ with
+ledger-guard (6 runs, eve 1.2.0)`, followed by the trade-off and store lines.
+
+**Decision: PRIMARY** — `create_skill`, `watch_slack_channel` and `unwatch_slack_channel` make an external effect (a Vercel Blob write) and get 2 stars with a 24-line configuration, so the real template can lead the "fork of an official template" shot, provided the shot presents what the lab found as a second write of the same object (engine finding 1), not as a second record.
+
 ## M2 fix verification
 
 The reference agent `examples/acme-support` (six tools, eve 1.5.0) through the demo flow: `crashtest run`, then
