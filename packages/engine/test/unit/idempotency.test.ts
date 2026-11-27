@@ -177,11 +177,54 @@ test("an operation that throws leaves the record started, so a repeat is an unce
   assert.equal(runs, 1);
 });
 
-test("a result that cannot be stored leaves the record started", async (t) => {
+/** Silences console.warn for the test and returns what it was called with. */
+function captureWarnings(t: TestContext): string[][] {
+  const warnings: string[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    warnings.push(args.map(String));
+  });
+  return warnings;
+}
+
+test("a result that cannot be stored is still returned, and the record stays started", async (t) => {
+  const warnings = captureWarnings(t);
   const store = fileStore(join(tempDir(t), "records"));
   const key = opKey(CTX, { orderId: "o1" });
-  await assert.rejects(once(key, store, async () => 10n), TypeError);
+  let runs = 0;
+  // A BigInt cannot be serialized, so the "done" record cannot be written after the effect happened.
+  assert.equal(await once(key, store, async () => BigInt(++runs) * 4242424242n), 4242424242n);
   assert.deepEqual(await store.get(key), STARTED);
+  // A repeat cannot know the outcome, and does not run the effect again.
+  await assert.rejects(
+    once(key, store, async () => ++runs),
+    isOutcomeUnknown,
+  );
+  assert.equal(runs, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!.join(" "), /crashtest-idempotency: .*could not be stored.*BigInt.*OUTCOME_UNKNOWN/);
+  assert.doesNotMatch(warnings[0]!.join(" "), /4242424242/, "the result itself is never printed");
+});
+
+test("a store that fails after the effect still lets once return the result, without printing it or the token", async (t) => {
+  const warnings = captureWarnings(t);
+  const { data } = fakeRedis(t);
+  const store = redisRestStore({ url: "https://redis.example", token: "secret-token" });
+  // An Upstash 5xx on the write of the "done" record, after the effect.
+  const failingPut: Store = {
+    get: store.get,
+    create: store.create,
+    async put() {
+      throw new Error("redisRestStore: SET failed with HTTP 503");
+    },
+  };
+  const result = { refundId: "re_secret_result" };
+  assert.deepEqual(await once("k1", failingPut, async () => result), result);
+  assert.equal(data.get("k1"), JSON.stringify(STARTED));
+  await assert.rejects(once("k1", store, async () => "again"), isOutcomeUnknown);
+  assert.equal(warnings.length, 1);
+  const text = warnings[0]!.join(" ");
+  assert.match(text, /SET failed with HTTP 503/);
+  assert.doesNotMatch(text, /re_secret_result|secret-token/);
 });
 
 test("two concurrent calls on a file store run the operation once and the loser gets an uncertain outcome", async (t) => {

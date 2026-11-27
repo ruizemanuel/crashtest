@@ -8,6 +8,9 @@
 // Replay after "done": returns the stored result without running the side effect again.
 // Replay after "started" (a crash, or a failure, before "done"): throws OutcomeUnknownError, whose message tells
 // the model the effect may or may not have happened, so it checks before retrying. At most once wins over at least once.
+// When the side effect ran but its "done" record cannot be stored (the store is down, the result is not
+// JSON-serializable), the caller still gets the result and a console warning names the store failure; the record
+// stays "started", so a replay gets OutcomeUnknownError.
 // Results must be JSON-serializable. This file imports only node built-ins, so it can be copied anywhere.
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -199,7 +202,16 @@ function replay<T>(record: OpRecord): T {
   throw new OutcomeUnknownError();
 }
 
-/** Runs `fn` at most once for `key`. See the header for what a repeat gets. If `fn` throws, the record stays "started". */
+/** What a warning may say about a store failure: the error's own text, never a value it was handed. */
+function describeFailure(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : "a value that is not an Error was thrown";
+}
+
+/**
+ * Runs `fn` at most once for `key`. See the header for what a repeat gets. If `fn` throws, the record stays "started".
+ * If `fn` succeeded but its result cannot be stored, the result is returned anyway (the effect happened) and the
+ * record stays "started".
+ */
 export async function once<T>(key: string, store: Store, fn: () => Promise<T>): Promise<T> {
   const existing = await store.get(key);
   if (existing !== null) return replay<T>(existing);
@@ -213,6 +225,13 @@ export async function once<T>(key: string, store: Store, fn: () => Promise<T>): 
   }
 
   const result = await fn();
-  await store.put(key, { state: "done", result });
+  try {
+    await store.put(key, { state: "done", result });
+  } catch (error) {
+    // Failing here would tell the model the operation failed although it happened.
+    console.warn(
+      `crashtest-idempotency: the operation ran, but its result could not be stored (${describeFailure(error)}); a repeat of it will get OUTCOME_UNKNOWN.`,
+    );
+  }
   return result;
 }

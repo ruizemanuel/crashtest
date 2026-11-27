@@ -158,7 +158,9 @@ its lane again, this time on a patched lab copy of the app. The app's files chan
      one such `fetch` call, outside any loop or callback.
    - `ledger-guard` wraps the body of `execute` in `once(opKey(ctx, { ... }), defaultStore(), async () => { ... })`.
      A replay after the effect finished gets the stored result; a replay after a crash during the effect gets an
-     `OUTCOME_UNKNOWN` error that tells the model to check before retrying, instead of a second effect.
+     `OUTCOME_UNKNOWN` error that tells the model to check before retrying, instead of a second effect. When the
+     effect happened but its result cannot be stored, the call still returns the result and logs a warning, and a
+     replay gets `OUTCOME_UNKNOWN`.
 
    A codemod that does not apply to the tool's code says why in `<tool>.json`, and its candidate runs no lane.
 3. **Choice.** A candidate improves the tool when its rating has more stars than before and no crash cell got a
