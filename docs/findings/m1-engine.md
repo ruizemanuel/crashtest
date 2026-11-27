@@ -327,7 +327,8 @@ which adds 2.5 s of latency to every request; `watch_slack_channel` makes three)
    `create_skill`, `watch_slack_channel` and `unwatch_slack_channel` pass the template's Slack check and reach their
    write. What remains: the identity must match what the tool checks. The README example lacks `issuer`, which this
    template compares with `slack:<team_id>`, and with the example as it is the tool refuses and crashtest reports "no
-   external effect" with no hint (engine finding 3). A GitHub identity could not be tried, because the triage
+   external effect" with no hint (engine finding 3); since this run, the README example has the shape of the identity
+   eve's Slack channel builds, `issuer` included. A GitHub identity could not be tried, because the triage
    template does not run.
 2. **Reads sent as POST: resolved for Slack and Vercel Connect.** `slack_read_channel_messages`, `slack_read_thread`
    and `read_slack_user` are not evaluated (no effect) without any `effects.ignore`, so the earlier workaround is no
