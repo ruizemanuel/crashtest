@@ -333,7 +333,9 @@ which adds 2.5 s of latency to every request; `watch_slack_channel` makes three)
 2. **Reads sent as POST: resolved for Slack and Vercel Connect.** `slack_read_channel_messages`, `slack_read_thread`
    and `read_slack_user` are not evaluated (no effect) without any `effects.ignore`, so the earlier workaround is no
    longer needed for them. Their ledgers keep the Connect token POST and the Slack read POST, both with
-   `mutating: false`, the progress lines report 0 effects for their baselines, and the crash point skips both reads
+   `mutating: false`, and the progress lines report 0 effects for their baselines. These three tools ran only
+   baselines; the crash cells of `watch_slack_channel` show the crash point skipping the reads: its ledgers keep the
+   Connect token POST and the `conversations.info` POST with `mutating: false`, and the crash lands after the Blob PUT
    (see above). What remains: on a host outside the catalog every POST is still an effect, also one that changes
    nothing, such as a second Vercel Blob delete of the same object (engine finding 1).
 3. **`disableTool()` files: resolved in discovery, not shown on a template.** Discovery skips an unlisted file that
