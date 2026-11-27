@@ -1,5 +1,6 @@
-// Pure helpers shared by the fake provider: endpoint normalization, body parsing and secret redaction.
+// Pure helpers shared by the fake provider: endpoint normalization, body parsing, body hashing and secret redaction.
 // Loaded inside the agent's own process, so no dependencies and no I/O.
+import { createHash } from "node:crypto";
 
 const REDACTED = "[redacted]";
 const MAX_TEXT_CHARS = 4096;
@@ -67,6 +68,25 @@ export function parseBody(text: string, contentType?: string): unknown {
     }
   }
   return text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text;
+}
+
+export function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    const fields = Object.keys(record).filter((key) => record[key] !== undefined).sort();
+    return `{${fields.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** The hash of a parsed body, the same whatever the order of its object keys. */
+export function bodyHash(body: unknown): string {
+  return sha256(canonicalJson(body));
 }
 
 /** Replaces the value of every sensitive key, recursively. */

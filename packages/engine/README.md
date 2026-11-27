@@ -319,14 +319,33 @@ reached). An invalid cell is run once more. Any other verdict than `clean` has t
 An effect is a mutating request (any method but GET, HEAD and OPTIONS) that reaches the fake provider, even when
 the crash came before the answer: a real provider could have processed it. A file write inside the lab is an effect
 too, counted per file (`WRITE data/state.json`, `APPEND data/outbox.jsonl`): an append always changes state, and a
-write that puts in a file the content it already has is a benign repeat. For Stripe, Slack, Resend and GitHub
-the fake provider keeps state, so a repeat that changes nothing (adding a label that is already there) is a
-benign repeat and does not lower the rating. For other hosts every POST counts, and a PUT, PATCH or DELETE repeated
+write that puts in a file the content it already has is a benign repeat. For Stripe, Slack, Resend, GitHub and
+Vercel Blob the fake provider keeps state, so a repeat that changes nothing (adding a label that is already there) is
+a benign repeat and does not lower the rating. For other hosts every POST counts, and a PUT, PATCH or DELETE repeated
 with the same body is benign. A PUT or DELETE that writes again an object the fake provider names (the same method,
 host and path, without the query) is benign too when its body differs from the earlier write only in fields that the
 two baselines show as varying on that endpoint, such as an `updatedAt` timestamp: the lab assumes the service
 overwrites the object. A 5-star summary that rests on such a repeat names those fields. A fixture's answer names no
 object, so a write that a fixture answers keeps counting as a state change.
+
+Vercel Blob (`vercel.com/api/blob`, with the requests that `@vercel/blob` sends) is modeled per object. A target is a
+pathname or a full blob URL, which stands for its decoded path:
+
+- A put with `addRandomSuffix` stores a new object every time, under the pathname with `-ct<n>` before its
+  extension, and is a state change.
+- A put without `addRandomSuffix` and without `allowOverwrite` to an object that is stored and not deleted is
+  refused with the client's `bad_request` error ("This blob already exists"), and changes nothing.
+- Any other put stores the object under its pathname: a state change when the object was absent, deleted or held
+  another body, and a benign repeat when it held the same body. A put that stores names its object
+  (`vercel-blob:<pathname>`), so a repeated overwrite that differs only in varying fields is benign as described
+  above.
+- A delete is a state change when at least one of its targets was not deleted yet in the run, and a benign repeat
+  otherwise.
+- A head answers the stored object, or the client's `not_found` error when the object is absent or deleted.
+- A list answers the stored objects that are not deleted and whose pathname starts with the prefix, sorted by
+  pathname.
+
+Other paths on `vercel.com` get the generic answers, and the Vercel REST API (`api.vercel.com`) is outside the catalog.
 
 Some requests are reads that providers receive as POST, which are not effects: the Slack Web API read methods
 (`conversations.history`, `conversations.replies`, `conversations.info`, `conversations.list`,
@@ -343,10 +362,10 @@ fixture on one of them is not an effect either. `effects.ignore` still covers an
 of the tool.
 
 A repeat with the same `Idempotency-Key` (or `X-Idempotency-Key`) header and the same body counts once where the
-real service honors the header: Stripe and Resend (the same key with another body gets their conflict error). Slack
-and GitHub ignore the header, so there a repeat with the same key is a second effect. For a host outside the
-catalog the header is assumed to be honored, since the lab cannot know; a 5-star summary that rests on such a repeat
-names the host and says the key is assumed to be honored.
+real service honors the header: Stripe and Resend (the same key with another body gets their conflict error). Slack,
+GitHub and Vercel Blob ignore the header, so there a repeat with the same key is a second effect. For a host outside
+the catalog the header is assumed to be honored, since the lab cannot know; a 5-star summary that rests on such a
+repeat names the host and says the key is assumed to be honored.
 
 ## Star ratings
 
@@ -434,5 +453,9 @@ silently weaken the test.
 - Every approval is approved.
 - Hosts outside the fake provider's catalog get a generic success answer; a tool that needs a specific response
   needs a fixture.
+- The fake Vercel Blob store does not serve the content of an object: a read from `*.blob.vercel-storage.com` gets
+  the generic answers. Multipart uploads (`/api/blob/mpu`) are generic POSTs, each one a state change. A delete takes
+  an object the lab never saw as one that exists, so deleting it is a state change, while head and list take it as
+  absent: the lab cannot know what the real store holds.
 - A report covers one eve version (the one installed in the app) and one platform and Node version, both recorded
   in `report.json`.

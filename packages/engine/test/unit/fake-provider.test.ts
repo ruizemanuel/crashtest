@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hostInCatalog, hostSupportsIdempotency, hostSupportsLookup } from "../../src/preload/catalog.ts";
+import { BLOB_BASE_URL, hostInCatalog, hostSupportsIdempotency, hostSupportsLookup } from "../../src/preload/catalog.ts";
 import { createFakeProvider, type FakeRequest, type FakeResult, type Fixture } from "../../src/preload/fake-provider.ts";
 import { isKnownRead } from "../../src/preload/known-reads.ts";
 import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "../../src/preload/normalize.ts";
@@ -378,6 +378,230 @@ test("POST github issue comments appends a comment each time", () => {
   expectEffect(a, { status: 201, stateChange: true, endpoint });
   expectEffect(b, { status: 201, stateChange: true, endpoint });
   assert.notEqual((a.body as { id: number }).id, (b.body as { id: number }).id);
+});
+
+// Vercel Blob, as @vercel/blob 2.4.0 calls it.
+const BLOB_API = "https://vercel.com/api/blob";
+const BLOB_PUT = "PUT vercel.com/api/blob/";
+const OVERWRITE = { "x-allow-overwrite": "1" };
+const SUFFIX = { "x-add-random-suffix": "1" };
+const JSON_BLOB = { "x-content-type": "application/json" };
+
+function blobPut(pathname: string, body: unknown, headers: Record<string, string> = {}): FakeRequest {
+  const bodyText = typeof body === "string" ? body : JSON.stringify(body);
+  return { method: "PUT", url: `${BLOB_API}/?${new URLSearchParams({ pathname })}`, headers, bodyText };
+}
+const blobDelete = (urls: string[], headers?: Record<string, string>) => post(`${BLOB_API}/delete`, { urls }, headers);
+const blobHead = (target: string, base = BLOB_API) => get(`${base}?${new URLSearchParams({ url: target })}`);
+const blobList = (prefix?: string, base = BLOB_API) => get(`${base}?${new URLSearchParams({ ...(prefix === undefined ? {} : { prefix }), mode: "expanded" })}`);
+const putBody = (r: FakeResult) => r.body as { url: string; pathname: string; etag: string };
+
+test("a Blob PUT of the same body with allowOverwrite is a benign repeat", () => {
+  const p = createFakeProvider(null);
+  const headers = { ...OVERWRITE, ...JSON_BLOB };
+  const first = p.handle(blobPut("notes/n1.json", { noteId: "n1", text: "hi" }, headers));
+  expectEffect(first, { status: 200, stateChange: true, endpoint: BLOB_PUT });
+  assert.equal(first.effect.object, "vercel-blob:notes/n1.json");
+  const { etag } = putBody(first);
+  assert.match(etag, /^"[0-9a-f]{16}"$/);
+  assert.deepEqual(first.body, {
+    url: "https://ctstore.public.blob.vercel-storage.com/notes/n1.json",
+    downloadUrl: "https://ctstore.public.blob.vercel-storage.com/notes/n1.json?download=1",
+    pathname: "notes/n1.json",
+    contentType: "application/json",
+    contentDisposition: 'inline; filename="n1.json"',
+    etag,
+  });
+  // The same body with its keys in another order.
+  const again = p.handle(blobPut("notes/n1.json", { text: "hi", noteId: "n1" }, headers));
+  expectEffect(again, { status: 200, stateChange: false, benign: "same object written again", endpoint: BLOB_PUT });
+  assert.equal(again.effect.object, "vercel-blob:notes/n1.json");
+  assert.deepEqual(again.body, first.body);
+});
+
+test("a Blob PUT with another body and allowOverwrite overwrites and is a state change", () => {
+  const p = createFakeProvider(null);
+  const first = p.handle(blobPut("notes/n1.json", { v: 1 }, OVERWRITE));
+  const second = p.handle(blobPut("notes/n1.json", { v: 22 }, OVERWRITE));
+  for (const r of [first, second]) {
+    expectEffect(r, { status: 200, stateChange: true, endpoint: BLOB_PUT });
+    assert.equal(r.effect.object, "vercel-blob:notes/n1.json");
+  }
+  assert.notEqual(putBody(second).etag, putBody(first).etag);
+  // Without x-content-type the object is stored as octet-stream, and head shows the last body written.
+  const head = p.handle(blobHead("notes/n1.json")).body as { size: number; etag: string; contentType: string };
+  assert.deepEqual([head.size, head.etag, head.contentType], [8, putBody(second).etag, "application/octet-stream"]);
+});
+
+test("a Blob PUT of an existing object without allowOverwrite is refused", () => {
+  const p = createFakeProvider(null);
+  const first = p.handle(blobPut("notes/n1.json", { v: 1 }));
+  expectEffect(first, { status: 200, stateChange: true, endpoint: BLOB_PUT });
+  assert.equal(first.effect.object, "vercel-blob:notes/n1.json");
+  const refused = { error: { code: "bad_request", message: "This blob already exists, use allowOverwrite: true to overwrite it" } };
+  const refusedHeaders: Array<Record<string, string>> = [{}, { "x-allow-overwrite": "0" }, { "x-add-random-suffix": "0" }];
+  for (const headers of refusedHeaders) {
+    for (const body of [{ v: 1 }, { v: 2 }]) {
+      const r = p.handle(blobPut("notes/n1.json", body, headers));
+      expectEffect(r, { status: 400, stateChange: false, endpoint: BLOB_PUT });
+      assert.deepEqual(r.body, refused);
+    }
+  }
+  // The refused writes changed nothing, and a deleted object can be written again.
+  assert.equal((p.handle(blobHead("notes/n1.json")).body as { etag: string }).etag, putBody(first).etag);
+  p.handle(blobDelete(["notes/n1.json"]));
+  expectEffect(p.handle(blobPut("notes/n1.json", { v: 1 })), { status: 200, stateChange: true, endpoint: BLOB_PUT });
+});
+
+test("a random suffix writes a new object every time", () => {
+  const p = createFakeProvider(null);
+  // The plain object exists, and without allowOverwrite that does not matter to a suffixed write.
+  p.handle(blobPut("notes/n1.json", { v: 1 }));
+  const a = p.handle(blobPut("notes/n1.json", { v: 1 }, SUFFIX));
+  const b = p.handle(blobPut("notes/n1.json", { v: 1 }, SUFFIX));
+  for (const r of [a, b]) expectEffect(r, { status: 200, stateChange: true, endpoint: BLOB_PUT });
+  assert.deepEqual([putBody(a).pathname, putBody(b).pathname], ["notes/n1-ct1.json", "notes/n1-ct2.json"]);
+  assert.deepEqual([a.effect.object, b.effect.object], ["vercel-blob:notes/n1-ct1.json", "vercel-blob:notes/n1-ct2.json"]);
+  assert.equal(putBody(b).url, "https://ctstore.public.blob.vercel-storage.com/notes/n1-ct2.json");
+  // The suffix goes before the extension of the last segment, or at the end when it has none.
+  const others = ["v1.2/readme", ".env", "a.tar.gz"].map((pathname) => putBody(p.handle(blobPut(pathname, "x", SUFFIX))).pathname);
+  assert.deepEqual(others, ["v1.2/readme-ct3", ".env-ct4", "a.tar-ct5.gz"]);
+  assert.equal((p.handle(blobHead("notes/n1-ct1.json")).body as { pathname: string }).pathname, "notes/n1-ct1.json");
+});
+
+test("a PUT to another pathname is a new object even with the same body", () => {
+  const p = createFakeProvider(null);
+  const a = p.handle(blobPut("notes/a.json", { v: 1 }, OVERWRITE));
+  const b = p.handle(blobPut("notes/b.json", { v: 1 }, OVERWRITE));
+  for (const r of [a, b]) expectEffect(r, { status: 200, stateChange: true, endpoint: BLOB_PUT });
+  assert.deepEqual([a.effect.object, b.effect.object], ["vercel-blob:notes/a.json", "vercel-blob:notes/b.json"]);
+});
+
+test("a second Blob delete of the same targets is benign, the first is a state change even for an object the lab never saw", () => {
+  const p = createFakeProvider(null);
+  const endpoint = "POST vercel.com/api/blob/delete";
+  const targets = ["a/b.json", `${BLOB_BASE_URL}a/b.json`];
+  const first = p.handle(blobDelete(targets));
+  expectEffect(first, { status: 200, stateChange: true, endpoint });
+  assert.deepEqual(first.body, {});
+  const second = p.handle(blobDelete(targets));
+  expectEffect(second, { status: 200, stateChange: false, benign: "objects already deleted", endpoint });
+  assert.deepEqual(second.body, {});
+  // One target not deleted yet makes the request a state change.
+  expectEffect(p.handle(blobDelete(["a/b.json", "a/c.json"])), { status: 200, stateChange: true, endpoint });
+  // A stored object is deleted once.
+  p.handle(blobPut("a/d.json", { v: 1 }));
+  expectEffect(p.handle(blobDelete([`${BLOB_BASE_URL}a/d.json`])), { status: 200, stateChange: true, endpoint });
+  expectEffect(p.handle(blobDelete(["a/d.json"])), { status: 200, stateChange: false, benign: "objects already deleted", endpoint });
+  // The deleted objects are not listed, nor is the one the lab never saw.
+  assert.deepEqual((p.handle(blobList()).body as { blobs: unknown[] }).blobs, []);
+});
+
+test("head answers by URL or pathname, after a PUT and after a delete", () => {
+  const p = createFakeProvider(null);
+  const notFound = { error: { code: "not_found", message: "The requested blob does not exist" } };
+  const missing = p.handle(blobHead("notes/a b.json"));
+  expectEffect(missing, { status: 404, stateChange: false, endpoint: "GET vercel.com/api/blob" });
+  assert.equal(missing.effect.mutating, false);
+  assert.deepEqual(missing.body, notFound);
+
+  // 16 characters, 17 bytes in UTF-8.
+  const text = '{"text":"héllo"}';
+  const put = p.handle(blobPut("notes/a b.json", text, JSON_BLOB));
+  const url = "https://ctstore.public.blob.vercel-storage.com/notes/a b.json";
+  const want = {
+    url,
+    downloadUrl: `${url}?download=1`,
+    pathname: "notes/a b.json",
+    contentType: "application/json",
+    contentDisposition: 'inline; filename="a b.json"',
+    etag: putBody(put).etag,
+    size: 17,
+    uploadedAt: "1970-01-01T00:00:00.000Z",
+    cacheControl: "public, max-age=2592000",
+  };
+  for (const r of [
+    p.handle(blobHead("notes/a b.json")),
+    p.handle(blobHead(`${BLOB_BASE_URL}notes/a%20b.json`)),
+    p.handle(blobHead(url, `${BLOB_API}/`)),
+  ]) {
+    assert.equal(r.status, 200);
+    assert.equal(r.effect.stateChange, false);
+    assert.deepEqual(r.body, want);
+  }
+
+  p.handle(blobDelete([`${BLOB_BASE_URL}notes/a%20b.json`]));
+  for (const target of ["notes/a b.json", `${BLOB_BASE_URL}notes/a%20b.json`]) {
+    const r = p.handle(blobHead(target));
+    assert.equal(r.status, 404, target);
+    assert.deepEqual(r.body, notFound, target);
+  }
+});
+
+test("list answers the stored objects by prefix", () => {
+  const p = createFakeProvider(null);
+  for (const pathname of ["notes/b.json", "notes/a.json", "other/c.json", "notes/d.json"]) p.handle(blobPut(pathname, { pathname }));
+  p.handle(blobDelete(["notes/d.json"]));
+  const entry = (pathname: string, size: number) => ({
+    url: `${BLOB_BASE_URL}${pathname}`,
+    downloadUrl: `${BLOB_BASE_URL}${pathname}?download=1`,
+    pathname,
+    size,
+    uploadedAt: "1970-01-01T00:00:00.000Z",
+  });
+  const notes = p.handle(blobList("notes/"));
+  expectEffect(notes, { status: 200, stateChange: false, endpoint: "GET vercel.com/api/blob" });
+  assert.deepEqual(notes.body, { blobs: [entry("notes/a.json", 27), entry("notes/b.json", 27)], hasMore: false, folders: [] });
+  const all = { blobs: [entry("notes/a.json", 27), entry("notes/b.json", 27), entry("other/c.json", 27)], hasMore: false, folders: [] };
+  assert.deepEqual(p.handle(blobList()).body, all);
+  assert.deepEqual(p.handle(blobList("", `${BLOB_API}/`)).body, all);
+  assert.deepEqual(p.handle(blobList("nothing/")).body, { blobs: [], hasMore: false, folders: [] });
+});
+
+test("a pathname cannot reach the state object's prototype", () => {
+  const p = createFakeProvider(null);
+  const put = p.handle(blobPut("__proto__", { v: 1 }));
+  expectEffect(put, { status: 200, stateChange: true, endpoint: BLOB_PUT });
+  assert.equal(put.effect.object, "vercel-blob:__proto__");
+  assert.equal(Object.getPrototypeOf(p.state.blobs), Object.prototype);
+  for (const provider of [p, createFakeProvider(JSON.parse(JSON.stringify(p.state)))]) {
+    const head = provider.handle(blobHead("__proto__"));
+    assert.equal(head.status, 200);
+    assert.equal((head.body as { pathname: string }).pathname, "__proto__");
+  }
+  // Names that only an inherited property would answer are absent.
+  for (const name of ["constructor", "toString", "hasOwnProperty"]) assert.equal(p.handle(blobHead(name)).status, 404, name);
+});
+
+test("other paths on vercel.com get the generic answers", () => {
+  const p = createFakeProvider(null);
+  const project = p.handle(post("https://vercel.com/api/v9/projects", { name: "acme" }));
+  expectEffect(project, { status: 200, stateChange: true, endpoint: "POST vercel.com/api/v9/projects" });
+  assert.deepEqual(project.body, { ok: true, id: "ct_000001" });
+  // A multipart upload is a generic POST, and the content of an object is not served.
+  const part = p.handle(post(`${BLOB_API}/mpu`, "part", { "x-mpu-action": "upload" }));
+  expectEffect(part, { status: 200, stateChange: true, endpoint: "POST vercel.com/api/blob/mpu" });
+  p.handle(blobPut("notes/a.json", { v: 1 }));
+  assert.deepEqual(p.handle(get(`${BLOB_BASE_URL}notes/a.json`)).body, {});
+});
+
+test("an idempotency key sent to vercel.com is not honored", () => {
+  assert.equal(hostInCatalog("vercel.com"), true);
+  assert.equal(hostSupportsLookup("vercel.com"), true);
+  assert.equal(hostSupportsIdempotency("vercel.com"), false);
+  // The Vercel REST API stays outside the catalog.
+  assert.equal(hostInCatalog("api.vercel.com"), false);
+  const p = createFakeProvider(null);
+  const key = { "idempotency-key": "k1" };
+  const first = p.handle(blobPut("notes/n1.json", { v: 1 }, { ...key, ...SUFFIX }));
+  const second = p.handle(blobPut("notes/n1.json", { v: 1 }, { ...key, ...SUFFIX }));
+  for (const r of [first, second]) {
+    expectEffect(r, { status: 200, stateChange: true, endpoint: BLOB_PUT });
+    assert.equal(r.effect.idempotencyKey, "k1");
+  }
+  assert.notEqual(putBody(first).pathname, putBody(second).pathname);
+  const posts = [0, 1].map(() => p.handle(post("https://vercel.com/api/v9/projects", { name: "acme" }, key)));
+  for (const r of posts) expectEffect(r, { status: 200, stateChange: true, endpoint: "POST vercel.com/api/v9/projects" });
 });
 
 test("generic POST appends to the collection of its path", () => {

@@ -80,6 +80,18 @@ test("zoo: put_timestamped rates 5 stars with benign repeats", E2E, async (t) =>
   assert.match(result.rating.summary, /differed only in `updatedAt`/, detail);
 });
 
+test("zoo: blob_overwrite rates 5 stars with benign repeats", E2E, async (t) => {
+  const { result, detail } = await lane(t, "blob_overwrite");
+  assert.equal(result.rating.stars, 5, detail);
+  assert.equal(result.rating.benignRepeats, true, detail);
+});
+
+test("zoo: blob_default rates 4 stars: the replay is refused after the upload happened", E2E, async (t) => {
+  const { result, detail } = await lane(t, "blob_default");
+  assert.equal(result.rating.stars, 4, detail);
+  assert.match(result.rating.summary, /model got an error/, detail);
+});
+
 test("zoo: check_before_act rates 5 stars", E2E, async (t) => {
   const { result, detail } = await lane(t, "check_before_act");
   assert.equal(result.rating.stars, 5, detail);

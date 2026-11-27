@@ -1,10 +1,9 @@
 // Stateful fake of every HTTP service an agent under test talks to. It answers requests deterministically and
 // models just enough provider state to tell a real duplicate effect (two refunds) from a benign repeat
 // (re-adding a label that exists). Pure and JSON-serializable: the preload keeps the state across a crash.
-import { createHash } from "node:crypto";
 import { append, handleCatalog, honorsIdempotencyKey, idempotencyConflict, nextId, own, type CatalogRequest, type Outcome } from "./catalog.ts";
 import { answerKnownRead, isKnownRead } from "./known-reads.ts";
-import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "./normalize.ts";
+import { bodyHash, normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl, sha256 } from "./normalize.ts";
 
 export interface FakeRequest {
   method: string;
@@ -50,8 +49,18 @@ export interface IdempotencyRecord {
   body: unknown;
 }
 
+/** One Vercel Blob object as the fake provider saw it written or deleted. */
+export interface BlobRecord {
+  pathname: string;
+  bodyHash: string;
+  contentType: string;
+  /** UTF-8 bytes of the body that was written. */
+  size: number;
+  deleted: boolean;
+}
+
 export interface ProviderState {
-  /** Id sequences: refund, email, slack, comment, generic. */
+  /** Id sequences: refund, email, slack, comment, generic, and blob for the random suffixes. */
   counters: Record<string, number>;
   /** Created records by collection name: `<host><path>` for generic POSTs, `ct:<name>` for catalog ones. */
   collections: Record<string, unknown[]>;
@@ -63,6 +72,8 @@ export interface ProviderState {
   putHashes: Record<string, string[]>;
   /** Hash of the last content written per `WRITE <relPath>`; an APPEND to the path forgets it. */
   fsWrites: Record<string, string>;
+  /** Vercel Blob objects per `blob:<pathname>`, deleted ones included. */
+  blobs: Record<string, BlobRecord>;
 }
 
 export interface FakeProvider {
@@ -78,25 +89,7 @@ const JSON_HEADERS = { "content-type": "application/json" };
 export const KEY_REPLAY = "idempotency key replay";
 
 function emptyState(): ProviderState {
-  return { counters: {}, collections: {}, idempotency: {}, sets: {}, putHashes: {}, fsWrites: {} };
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    const record = value as Record<string, unknown>;
-    const fields = Object.keys(record).filter((key) => record[key] !== undefined).sort();
-    return `{${fields.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
-function bodyHash(body: unknown): string {
-  return sha256(canonicalJson(body));
+  return { counters: {}, collections: {}, idempotency: {}, sets: {}, putHashes: {}, fsWrites: {}, blobs: {} };
 }
 
 function globToRegExp(glob: string): RegExp {
@@ -181,6 +174,7 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
       query: url.searchParams,
       headers: req.headers,
       body,
+      bodyBytes: Buffer.byteLength(req.bodyText, "utf8"),
       redactedBody: effect.body,
     };
     const answer = (): FakeResult => {

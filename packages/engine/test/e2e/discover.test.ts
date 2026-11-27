@@ -10,6 +10,8 @@ test("smoke: discover the zoo", { timeout: 900_000 }, async () => {
   assert.deepEqual(discovery.tools.map((t) => t.name), [
     "approval_naive",
     "benign_labels",
+    "blob_default",
+    "blob_overwrite",
     "callid_guard",
     "check_before_act",
     "fs_effect",
