@@ -1,6 +1,7 @@
 // Turns the verdicts of a tool's cells into its star rating and the fixed report copy, then the tool ratings into
 // the agent's rating. Pure: the copy below is the product's wording, not generated text.
 import { hostOfEndpoint } from "./detect.ts";
+import { crashCells } from "./matrix.ts";
 import { hostSupportsIdempotency, hostSupportsLookup } from "./preload/catalog.ts";
 import type { CellVerdict, EffectEvidence, NaReason, Stars, ToolRating } from "./types.ts";
 
@@ -101,23 +102,39 @@ function notEvaluable(o: RateInput, na: { reason: NaReason; detail: string }): T
   };
 }
 
+/** The crash cells that replay a call with its id: only they can show a duplicate with a stable id. */
+const STABLE_ID_CELLS = crashCells()
+  .filter((cell) => cell.idMode === "stable")
+  .map((cell) => cell.id);
+
+/**
+ * Whether the cells that could be evaluated settle the rating whatever the invalid ones would have shown: a stable-id
+ * duplicate is 1 or 2 stars in any case, and a fresh-id or retry duplicate is 3 stars once every stable-id cell could
+ * be evaluated (no other cell can show a stable-id duplicate).
+ */
+function settledWithout(cells: CellVerdict[], dups: CellVerdict[]): boolean {
+  if (dups.some((cell) => cell.dupClass === "stable")) return true;
+  return dups.length > 0 && STABLE_ID_CELLS.every((id) => cells.some((cell) => cell.cellId === id && cell.kind !== "invalid"));
+}
+
 /**
  * The star rating of one tool from its cells' verdicts:
  * a duplicate with a stable id is 1 star (2 when the tool needs approval); a duplicate only with a fresh id or after
  * a retry is 3; no duplicate but a misleading result for the model (phantom failure, lost effect) is 4; else 5.
+ * Invalid cells make the tool not evaluable, unless the other cells settle the rating anyway (see `settledWithout`).
  */
 export function rateTool(o: RateInput): ToolRating {
   if (o.na) return notEvaluable(o, o.na);
   if (o.cells.length === 0) return notEvaluable(o, { reason: "cells-invalid", detail: "no crash cell ran" });
   const invalid = o.cells.filter((cell) => cell.kind === "invalid");
-  if (invalid.length > 0) {
-    const invalidIds = invalid.map((cell) => `${cell.cellId} (${cell.invalidReason ?? "invalid"})`).join(", ");
-    return notEvaluable(o, { reason: "cells-invalid", detail: invalidIds });
-  }
+  const evaluable = o.cells.filter((cell) => cell.kind !== "invalid");
+  const dups = evaluable.filter((cell) => cell.kind === "dup");
+  const invalidIds = invalid.map((cell) => `${cell.cellId} (${cell.invalidReason ?? "invalid"})`).join(", ");
+  if (invalid.length > 0 && !settledWithout(o.cells, dups)) return notEvaluable(o, { reason: "cells-invalid", detail: invalidIds });
+  const stands = invalid.length === 0 ? "" : ` The rating stands without the cells that could not be evaluated: ${invalidIds}.`;
 
-  const dups = o.cells.filter((cell) => cell.kind === "dup");
-  const misleading = o.cells.filter((cell) => cell.kind === "phantom-failure" || cell.kind === "lost-effect");
-  const benignRepeats = o.cells.some((cell) => cell.benignRepeats > 0);
+  const misleading = evaluable.filter((cell) => cell.kind === "phantom-failure" || cell.kind === "lost-effect");
+  const benignRepeats = evaluable.some((cell) => cell.benignRepeats > 0);
   const base = {
     tool: o.tool,
     approval: o.approval,
@@ -131,7 +148,7 @@ export function rateTool(o: RateInput): ToolRating {
     const copy = duplicateCopy(dups, o.identity);
     const stars: Stars = dups.some((cell) => cell.dupClass === "stable") ? (o.approval ? 2 : 1) : 3;
     const lookup = copy.host !== null && hostSupportsLookup(copy.host) ? LOOKUP_HINT : "";
-    return { ...base, stars, summary: copy.summary, recommendation: `${copy.recommendation}${lookup}` };
+    return { ...base, stars, summary: `${copy.summary}${stands}`, recommendation: `${copy.recommendation}${lookup}` };
   }
   if (misleading.length > 0) {
     const phantom = misleading.find((cell) => cell.kind === "phantom-failure");

@@ -289,7 +289,13 @@ header and the same body counts once, as with providers that honor the header.
 | ★★★☆☆ 3 | Ran twice only when the call came back with a new id (fresh id or a retry by the model): its protection is tied to `ctx.callId`. |
 | ★★☆☆☆ 2 | Ran twice when the step was replayed with the same call id, but the tool requires approval. |
 | ★☆☆☆☆ 1 | Ran twice when the step was replayed with the same call id, and the tool requires no approval. |
-| not evaluated | No external effect in the baseline, the baseline failed, the two baselines differed, a crash cell could not be evaluated, or eve did not list the tool. |
+| not evaluated | No external effect in the baseline, the baseline failed, the two baselines differed, a crash cell could not be evaluated and the other cells do not settle the rating (see below), or eve did not list the tool. |
+
+A crash cell that could not be evaluated makes the tool not evaluated, unless the cells that could be evaluated
+settle the rating whatever that cell would have shown. A duplicate with the same call id gives 1 or 2 stars in any
+case. A duplicate with a new id or after a retry gives 3 stars when both cells that keep the call id
+(`post-effect-fast-stable` and `post-settle`) could be evaluated, since only they can show a duplicate with the same
+call id. The summary then names the cells that could not be evaluated.
 
 "Not evaluated" never counts as a pass. The agent rating is the lowest rating among the evaluated tools that are
 not waived, shown with its coverage ("1 of 2 tools evaluated"). With no such tool, the agent is not evaluated.

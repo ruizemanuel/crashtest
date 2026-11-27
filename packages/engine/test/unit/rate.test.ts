@@ -96,14 +96,66 @@ test("repeated requests that changed no state keep 5 stars and are called out", 
   assert.equal(rating.recommendation, "Idempotent by nature: no change needed.");
 });
 
-test("one invalid cell makes the tool not evaluable (cells-invalid)", () => {
-  const invalid = verdict({ cellId: "post-settle", kind: "invalid", invalidReason: "crash-not-triggered" });
-  const rating = rate([dup("stable", "post-effect-fast-stable"), invalid]);
+// --- invalid cells --------------------------------------------------------------------------------------------
+
+const invalidCell = (cellId: CellVerdict["cellId"], invalidReason = "crash-not-triggered"): CellVerdict => verdict({ cellId, kind: "invalid", invalidReason });
+const STANDS = (cells: string) => ` The rating stands without the cells that could not be evaluated: ${cells}.`;
+
+test("one invalid cell makes a tool without a duplicate not evaluable (cells-invalid)", () => {
+  const rating = rate([verdict(), verdict({ cellId: "post-effect-fast-fresh" }), verdict({ cellId: "post-effect-slow" }), invalidCell("post-settle")]);
   assert.equal(rating.stars, null);
   assert.equal(rating.na?.reason, "cells-invalid");
   assert.equal(rating.na?.detail, "post-settle (crash-not-triggered)");
   assert.equal(rating.summary, "Some crash cells could not be evaluated: post-settle (crash-not-triggered)");
   assert.equal(rating.recommendation, "");
+});
+
+test("an invalid cell can hide a duplicate, so a misleading result alone is not rated either", () => {
+  const phantom = verdict({ cellId: "post-effect-fast-fresh", kind: "phantom-failure", outcome: "error", error: "x" });
+  const rating = rate([verdict(), phantom, invalidCell("post-effect-slow")]);
+  assert.equal(rating.stars, null);
+  assert.equal(rating.na?.reason, "cells-invalid");
+});
+
+test("a confirmed stable-id duplicate keeps its 1 star, or 2 with approval, whatever cells are invalid", () => {
+  const cells = [dup("stable", "post-effect-fast-stable"), invalidCell("post-effect-fast-fresh", "turn-timeout"), verdict({ cellId: "post-effect-slow" }), invalidCell("post-settle")];
+  const rating = rate(cells);
+  assert.equal(rating.stars, 1);
+  assert.equal(rating.na, undefined);
+  assert.equal(
+    rating.summary,
+    `Ran twice after a crash replayed the step with the same call id (2 effects, expected 1).${STANDS("post-effect-fast-fresh (turn-timeout), post-settle (crash-not-triggered)")}`,
+  );
+  assert.match(rating.recommendation, /^Send an idempotency key built from business identity fields/);
+  assert.deepEqual(rating.cells, cells, "the invalid cells stay in the evidence");
+  assert.equal(rate(cells, { approval: true }).stars, 2);
+});
+
+test("a fresh or retry duplicate gives 3 stars with an invalid cell when both stable-id cells could be evaluated", () => {
+  const cells = [verdict(), dup("fresh", "post-effect-fast-fresh"), invalidCell("post-effect-slow", "unexpected-death"), verdict({ cellId: "post-settle" })];
+  const rating = rate(cells);
+  assert.equal(rating.stars, 3);
+  assert.equal(rating.na, undefined);
+  assert.equal(rating.summary, `Ran twice when the replayed call got a new id and rewritten text (2 effects, expected 1).${STANDS("post-effect-slow (unexpected-death)")}`);
+
+  const retry = rate([verdict(), invalidCell("post-effect-fast-fresh"), dup("retry", "post-effect-slow"), verdict({ cellId: "post-settle" })]);
+  assert.equal(retry.stars, 3);
+});
+
+test("a fresh or retry duplicate is not rated while a stable-id cell is invalid or missing: it could hide a worse one", () => {
+  for (const stableCell of ["post-effect-fast-stable", "post-settle"] as const) {
+    const others = (["post-effect-fast-stable", "post-settle"] as const).filter((id) => id !== stableCell).map((cellId) => verdict({ cellId }));
+    const rating = rate([invalidCell(stableCell), dup("retry", "post-effect-slow"), ...others]);
+    assert.equal(rating.stars, null, stableCell);
+    assert.equal(rating.na?.reason, "cells-invalid", stableCell);
+    assert.equal(rating.na?.detail, `${stableCell} (crash-not-triggered)`, stableCell);
+  }
+  const missing = rate([dup("fresh", "post-effect-fast-fresh"), invalidCell("post-effect-slow"), verdict({ cellId: "post-settle" })]);
+  assert.equal(missing.stars, null, "post-effect-fast-stable did not run");
+});
+
+test("without invalid cells the summary names none", () => {
+  assert.doesNotMatch(rate([dup("stable", "post-effect-fast-stable"), ...CLEAN]).summary, /could not be evaluated/);
 });
 
 test("several invalid cells are all named in the detail", () => {
