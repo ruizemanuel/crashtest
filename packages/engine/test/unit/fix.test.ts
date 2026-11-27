@@ -129,7 +129,8 @@ test("git apply turns the original files into the patched ones", (t) => {
   const dir = tempDir(t);
   for (const file of FILES) if (file.before !== null) write(dir, file.path, file.before);
   writeFileSync(join(dir, "fix.patch"), patchOf(FILES));
-  const result = spawnSync("git", ["apply", "fix.patch"], { cwd: dir, encoding: "utf8" });
+  // A global core.autocrlf=true (the Windows default) would write the new file with CRLF.
+  const result = spawnSync("git", ["-c", "core.autocrlf=false", "apply", "fix.patch"], { cwd: dir, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   for (const file of FILES) assert.equal(read(dir, file.path), file.after, file.path);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -160,7 +160,8 @@ test("lab resolves eve upward from the lab and reports its version and binary", 
 
     assert.equal(lab.appDir, app);
     assert.equal(lab.eveVersion, "1.5.0");
-    assert.equal(lab.eveBin, join(app, "node_modules", "eve", "bin", "eve.js"));
+    // eve resolves through realpath; on macOS the temp dir under /var is a symlink to /private/var.
+    assert.equal(lab.eveBin, join(realpathSync(join(app, "node_modules", "eve")), "bin", "eve.js"));
     assert.equal(existsSync(join(lab.labDir, "node_modules")), false);
   });
 });
