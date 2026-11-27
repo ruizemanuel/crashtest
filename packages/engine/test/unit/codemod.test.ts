@@ -585,6 +585,118 @@ for (const c of NOT_APPLIED) {
   });
 }
 
+/** The tsconfig of a typed app: with it, a patch is applied only if it adds no type errors. */
+const TSCONFIG = `{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext","moduleResolution":"bundler"},"include":["agent/**/*.ts"]}`;
+
+/** A tool whose input is typed by an interface that lacks `orderId`. */
+const TYPED_INPUT = toolSource(`  async execute(input: Input, ctx) {
+    return { text: input.text };
+  },`, `interface Input { text: string }\n`);
+
+test("ledger-guard refuses a synchronous execute with a declared return type", (t) => {
+  const method = toolSource(`  execute(input, ctx): { ok: boolean } {\n    return { ok: true };\n  },`);
+  const arrow = toolSource(`  execute: (input, ctx): { ok: boolean } => ({ ok: true }),`);
+  const promised = toolSource(`  async execute(input, ctx): Promise<{ ok: boolean }> {\n    return { ok: true };\n  },`);
+  const app = tempApp(t, { "agent/tools/method.ts": method, "agent/tools/arrow.ts": arrow, "agent/tools/promised.ts": promised });
+  const reason = "execute is synchronous and declares its return type, which the guard would turn into a Promise";
+
+  assert.deepEqual(applyLedgerGuard(app, tool("method"), IDENTITY), { applied: false, reason, files: [] });
+  assert.deepEqual(applyLedgerGuard(app, tool("arrow"), IDENTITY), { applied: false, reason, files: [] });
+  assert.equal(read(app, "agent/tools/method.ts"), method);
+  assert.equal(read(app, "agent/tools/arrow.ts"), arrow);
+  assert.equal(existsSync(join(app, ...HELPER.split("/"))), false);
+
+  const after = appliedText(app, applyLedgerGuard(app, tool("promised"), IDENTITY), "agent/tools/promised.ts", promised);
+  assert.ok(after.includes(`  async execute(input, ctx): Promise<{ ok: boolean }> {\n    return once(`));
+});
+
+test("a field added to a type-annotated input pattern needs the annotation to declare it", (t) => {
+  const literal = toolSource(`  async execute({ text }: { text: string; orderId: string }, ctx) {\n    return { text };\n  },`);
+  const named = toolSource(`  async execute({ text }: Input, ctx) {\n    return { text };\n  },`, `interface Input { text: string }\n`);
+  const app = tempApp(t, { "agent/tools/literal.ts": literal, "agent/tools/named.ts": named });
+
+  assert.deepEqual(applyLedgerGuard(app, tool("named"), ["orderId"]), {
+    applied: false,
+    reason: `execute's input pattern has a type annotation that does not declare "orderId"`,
+    files: [],
+  });
+  assert.equal(read(app, "agent/tools/named.ts"), named);
+
+  assert.equal(
+    appliedText(app, applyLedgerGuard(app, tool("literal"), ["orderId"]), "agent/tools/literal.ts", literal),
+    toolSource(
+      `  async execute({ text, orderId }: { text: string; orderId: string }, ctx) {
+    return once(opKey(ctx, { orderId }), defaultStore(), async () => {
+      return { text };
+    });
+  },`,
+      `import { defaultStore, once, opKey } from "../lib/crashtest-idempotency";\n`,
+    ),
+  );
+});
+
+test("the helper import gets the extension the app resolves", (t) => {
+  const nodeNext = (options: string): string =>
+    `{"compilerOptions":{"strict":true,"noEmit":true,"module":"NodeNext"${options}},"include":["agent/**/*.ts"]}`;
+  const withRelative = NOTIFY.replace(`import { z } from "zod";\n`, `import { z } from "zod";\nimport { x } from "./x.js";\n`);
+  const cases: { name: string; files: Record<string, string>; source: string; specifier: string }[] = [
+    { name: "nodenext", files: { "tsconfig.json": nodeNext("") }, source: NOTIFY, specifier: "../lib/crashtest-idempotency.js" },
+    {
+      name: "nodenext with .ts imports",
+      files: { "tsconfig.json": nodeNext(`,"allowImportingTsExtensions":true`) },
+      source: NOTIFY,
+      specifier: "../lib/crashtest-idempotency.ts",
+    },
+    {
+      name: "nodenext from an extended tsconfig with comments",
+      files: {
+        "tsconfig.json": `// The app's settings.\n{ "extends": "./tsconfig.base.json", "include": ["agent/**/*.ts"] }\n`,
+        "tsconfig.base.json": `{ "compilerOptions": { "strict": true, "noEmit": true, "moduleResolution": "nodenext", "module": "nodenext" } }`,
+      },
+      source: NOTIFY,
+      specifier: "../lib/crashtest-idempotency.js",
+    },
+    { name: "no tsconfig", files: {}, source: NOTIFY, specifier: "../lib/crashtest-idempotency" },
+    {
+      name: "a relative .js import",
+      files: { "agent/tools/x.ts": "export const x = 1;\n" },
+      source: withRelative,
+      specifier: "../lib/crashtest-idempotency.js",
+    },
+  ];
+
+  for (const c of cases) {
+    const app = tempApp(t, { ...c.files, "agent/tools/notify.ts": c.source });
+
+    const after = appliedText(app, applyLedgerGuard(app, tool("notify"), IDENTITY), "agent/tools/notify.ts", c.source);
+
+    assert.ok(after.includes(`import { defaultStore, once, opKey } from "${c.specifier}";\n`), `${c.name}: ${after}`);
+  }
+});
+
+test("a guard that would not type-check is refused with the compiler's message", (t) => {
+  const app = tempApp(t, { "tsconfig.json": TSCONFIG, "agent/tools/x.ts": TYPED_INPUT, "agent/tools/notify.ts": NOTIFY });
+
+  const result = applyLedgerGuard(app, tool("x"), ["orderId"]);
+
+  assert.equal(result.applied, false);
+  assert.match(result.reason ?? "", /^the edited agent\/tools\/x\.ts would not type-check: agent\/tools\/x\.ts: .*orderId/);
+  assert.deepEqual(result.files, []);
+  assert.equal(read(app, "agent/tools/x.ts"), TYPED_INPUT);
+  assert.equal(existsSync(join(app, ...HELPER.split("/"))), false);
+
+  // A guard that type-checks, with the helper it brings, is applied in the same app.
+  assert.equal(appliedText(app, applyLedgerGuard(app, tool("notify"), IDENTITY), "agent/tools/notify.ts", NOTIFY), NOTIFY_GUARDED);
+});
+
+test("an app without tsconfig.json is patched as before", (t) => {
+  const app = tempApp(t, { "agent/tools/x.ts": TYPED_INPUT, "agent/tools/notify.ts": NOTIFY });
+
+  const typed = appliedText(app, applyLedgerGuard(app, tool("x"), ["orderId"]), "agent/tools/x.ts", TYPED_INPUT);
+  assert.ok(typed.includes("return once(opKey(ctx, { orderId: input.orderId }), defaultStore(), async () => {"));
+  assert.equal(appliedText(app, applyLedgerGuard(app, tool("notify"), IDENTITY), "agent/tools/notify.ts", NOTIFY), NOTIFY_GUARDED);
+});
+
 test("a tool file outside the app is never touched", (t) => {
   const root = tempApp(t, { "outside.ts": NOTIFY, "app/package.json": "{}" });
   const app = join(root, "app");

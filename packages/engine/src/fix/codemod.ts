@@ -14,6 +14,7 @@ import type {
   ArrowFunction,
   CallExpression,
   FunctionExpression,
+  ImportDeclaration,
   MethodDeclaration,
   ObjectBindingPattern,
   ObjectLiteralExpression,
@@ -23,6 +24,7 @@ import type {
 import { templatePath } from "../paths.ts";
 import { hostSupportsIdempotency } from "../preload/catalog.ts";
 import type { ToolInfo } from "../types.ts";
+import { newTypeErrors, readModuleSettings } from "./typecheck.ts";
 
 export interface CodemodFile {
   /** App-relative, posix. */
@@ -53,6 +55,9 @@ export function applyLedgerGuard(appDir: string, tool: ToolInfo, identity: strin
     assertNamesFree(source, LEDGER_GUARD_NAMES);
     const fn = findExecute(source.sf);
     if (fn.compilerNode.asteriskToken) notApplied("execute is a generator");
+    if (!fn.isAsync() && fn.getReturnTypeNode()) {
+      notApplied("execute is synchronous and declares its return type, which the guard would turn into a Promise");
+    }
     const binding = bindIdentity(source, fn, identity);
     return [...binding.edits, guardBody(source, fn, binding.key), importEdit(source, LEDGER_GUARD_NAMES)];
   });
@@ -87,6 +92,8 @@ interface Edit {
 }
 
 interface Source {
+  /** The app directory. */
+  root: string;
   /** App-relative posix path of the tool file. */
   path: string;
   /** The text of the file without a byte order mark: what positions in `sf` refer to. */
@@ -114,7 +121,10 @@ function runCodemod(appDir: string, tool: ToolInfo, edit: (source: Source) => (E
   }
 }
 
-/** Reads and checks the tool file, edits it, and writes it and the helper only once every check passed. */
+/**
+ * Reads and checks the tool file, edits it, and writes it and the helper only once every check passed: the edited
+ * file parses and, in an app with a tsconfig.json, the edits add no type errors to the project.
+ */
 function applyCodemod(root: string, tool: ToolInfo, edit: (source: Source) => (Edit | null)[]): CodemodResult {
   const file = resolve(root, tool.file);
   if (file === root || !contains(root, file)) notApplied(`tool file ${tool.file} is outside the app`);
@@ -134,7 +144,7 @@ function applyCodemod(root: string, tool: ToolInfo, edit: (source: Source) => (E
   const sf = project.createSourceFile(name, text);
   if (!parses(project, sf)) notApplied(`tool file ${path} does not parse`);
 
-  const edited = splice(text, edit(readSource(path, text, sf)).filter((e) => e !== null));
+  const edited = splice(text, edit(readSource(root, path, text, sf)).filter((e) => e !== null));
   if (edited === text) notApplied("already guarded");
   if (!parses(project, project.createSourceFile(name, edited, { overwrite: true }))) {
     notApplied(`the edited ${path} would not parse, so it was left as it is`);
@@ -145,6 +155,11 @@ function applyCodemod(root: string, tool: ToolInfo, edit: (source: Source) => (E
   if (createHelper && !insideApp(root, helper)) notApplied(`${HELPER_FILE} would be written outside the app`);
 
   const after = bom + edited;
+  const checked = [{ path, text: after }];
+  if (createHelper) checked.push({ path: HELPER_FILE, text: readFileSync(templatePath("idempotency.ts"), "utf8") });
+  const first = newTypeErrors(root, checked)?.[0];
+  if (first !== undefined) notApplied(`the edited ${path} would not type-check: ${first}`);
+
   writeFileSync(file, after);
   const files: CodemodFile[] = [{ path, before, after }];
   if (createHelper) {
@@ -184,7 +199,7 @@ function splice(text: string, edits: Edit[]): string {
   return out;
 }
 
-function readSource(path: string, text: string, sf: SourceFile): Source {
+function readSource(root: string, path: string, text: string, sf: SourceFile): Source {
   const helperImports = new Map<string, string>();
   for (const declaration of sf.getImportDeclarations()) {
     if (declaration.isTypeOnly() || !isHelperSpecifier(declaration.getModuleSpecifierValue(), path)) continue;
@@ -194,6 +209,7 @@ function readSource(path: string, text: string, sf: SourceFile): Source {
   }
   const firstSpecifier = sf.getImportDeclarations()[0]?.getModuleSpecifier().getText();
   return {
+    root,
     path,
     text,
     sf,
@@ -446,6 +462,11 @@ function bindFromPattern(
 ): { values: Map<string, string>; reads: string[]; edit: Edit | null } {
   const elements = pattern.getElements();
   const rest = elements.find((e) => e.getDotDotDotToken() !== undefined);
+  // A field added to the pattern must be one its type annotation declares, which only a type literal shows here.
+  const annotation = pattern.getParentIfKind(SyntaxKind.Parameter)?.getTypeNode();
+  const declares = (field: string): boolean =>
+    annotation === undefined ||
+    (Node.isTypeLiteral(annotation) && annotation.getMembers().some((m) => Node.isPropertySignature(m) && staticName(m.getNameNode()) === field));
   const values = new Map<string, string>();
   const reads: string[] = [];
   const added: string[] = [];
@@ -460,6 +481,7 @@ function bindFromPattern(
       values.set(field, memberOf(rest.getName(), field));
       reads.push(rest.getName());
     } else {
+      if (!declares(field)) notApplied(`execute's input pattern has a type annotation that does not declare "${field}"`);
       const name = pick(bindingNameFor(field));
       added.push(name === field ? field : `${propertyKey(field)}: ${name}`);
       values.set(field, name);
@@ -634,9 +656,7 @@ function importEdit(source: Source, names: readonly string[]): Edit | null {
     if (named && Node.isNamedImports(named)) return appendToBraces(source, named, named.getElements(), missing);
   }
 
-  const specifiers = declarations.map((d) => d.getModuleSpecifierValue());
-  const extension = specifiers.some((s) => (s.startsWith("./") || s.startsWith("../")) && s.endsWith(".ts")) ? ".ts" : "";
-  const path = posix.relative(posix.dirname(source.path), HELPER_MODULE) + extension;
+  const path = posix.relative(posix.dirname(source.path), HELPER_MODULE) + helperExtension(source, declarations);
   const specifier = path.startsWith("../") ? path : `./${path}`;
   const last = declarations.at(-1);
   const semicolon = last && !last.getText().endsWith(";") ? "" : ";";
@@ -647,6 +667,19 @@ function importEdit(source: Source, names: readonly string[]): Edit | null {
   }
   const at = source.sf.getStatements()[0]!.getStart(true);
   return { start: at, end: at, text: `${statement}${source.eol}${source.eol}` };
+}
+
+/**
+ * The extension of the helper import: that of the tool's other relative imports, else, without any, the one the
+ * app's tsconfig.json needs (Node's resolution wants `.js`, or `.ts` where it may be written), else none.
+ */
+function helperExtension(source: Source, declarations: readonly ImportDeclaration[]): string {
+  const specifiers = declarations.map((d) => d.getModuleSpecifierValue()).filter((s) => s.startsWith("./") || s.startsWith("../"));
+  if (specifiers.some((s) => s.endsWith(".ts"))) return ".ts";
+  if (specifiers.some((s) => s.endsWith(".js"))) return ".js";
+  if (specifiers.length > 0) return "";
+  const settings = readModuleSettings(source.root);
+  return settings?.nodeEsm ? (settings.tsExtensions ? ".ts" : ".js") : "";
 }
 
 /** Appends `items` to the list between the first and the last character of `node`, its `{` and `}`. */
