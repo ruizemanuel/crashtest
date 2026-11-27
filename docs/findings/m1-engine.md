@@ -20,6 +20,11 @@ used):
   fails with a module-resolution error, and the baseline-failed hint always points at the input.
 - **eve 1.2.0** has every capability the engine uses; a full lane ran on it (the SRE template).
 
+Update (2026-11-27, engine at `8e7ebbc`): the S5 bullets above ("No tool of the real templates can be rated yet",
+"S5 exposed engine gaps") are superseded. SRE: `create_skill`, `watch_slack_channel` and `unwatch_slack_channel` get
+2 stars (a repeated Vercel Blob write), the other eight tools are not evaluated (no effect). Triage: refused with the
+eve version message. Only the gaps "S5 after the engine hardening" lists remain open; the decision is now PRIMARY.
+
 ## Engine verification
 
 ### Call id and turn id across a replay
@@ -231,6 +236,8 @@ token).
 **Decision: FALLBACK** — none of the three real-template tools can be rated in the lab today (two need channel sessions the lab cannot create, one only changes eve session state, and the triage template does not run as published), so the reference agent leads the demo.
 
 ## S5 after the engine hardening
+
+This section's decision supersedes the `**Decision: FALLBACK**` of the earlier S5 section above.
 
 The same two templates at the same commits, run again on 2026-11-27 with the engine at commit `8e7ebbc` (Windows 10,
 Node 24.15.0, scripted mock model and fake provider: no tokens were spent and no request left the machine). Each
