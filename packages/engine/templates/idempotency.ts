@@ -93,7 +93,7 @@ function recordFile(dir: string, key: string): string {
 }
 
 /** One JSON file per key in `dir` (default: CRASHTEST_IDEMPOTENCY_DIR, else ./.crashtest-idempotency). */
-export function fileStore(dir: string = process.env.CRASHTEST_IDEMPOTENCY_DIR || ".crashtest-idempotency"): Store {
+export function fileStore(dir: string = process.env["CRASHTEST_IDEMPOTENCY_DIR"] || ".crashtest-idempotency"): Store {
   return {
     async get(key) {
       const file = recordFile(dir, key);
@@ -161,8 +161,8 @@ async function redisCommand(url: string, token: string, command: string[]): Prom
 
 /** Upstash Redis over REST (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN unless given). Throws if either is missing. */
 export function redisRestStore(o: { url?: string; token?: string } = {}): Store {
-  const url = o.url || process.env.UPSTASH_REDIS_REST_URL;
-  const token = o.token || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const url = o.url || process.env["UPSTASH_REDIS_REST_URL"];
+  const token = o.token || process.env["UPSTASH_REDIS_REST_TOKEN"];
   if (!url || !token) {
     const missing = [!url && "UPSTASH_REDIS_REST_URL", !token && "UPSTASH_REDIS_REST_TOKEN"].filter(Boolean);
     throw new Error(`redisRestStore: missing ${missing.join(" and ")}; set it in the environment or pass it as an option`);
@@ -192,7 +192,7 @@ export function redisRestStore(o: { url?: string; token?: string } = {}): Store 
 
 /** Redis when both Upstash variables are set, else the file store. */
 export function defaultStore(): Store {
-  return process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN ? redisRestStore() : fileStore();
+  return process.env["UPSTASH_REDIS_REST_URL"] && process.env["UPSTASH_REDIS_REST_TOKEN"] ? redisRestStore() : fileStore();
 }
 
 // ---------------------------------------------------------------- once

@@ -189,7 +189,53 @@ test("overlay repairs a shim or a copied file that was edited by hand", () => {
   });
 });
 
+test("overlay moves a JavaScript eve channel aside and writes the lab channel", () => {
+  withTemp((labDir) => {
+    put(labDir, "agent/agent.ts", ORIGINAL_AGENT);
+    put(labDir, "agent/channels/eve.mjs", ORIGINAL_CHANNEL);
+
+    assert.deepEqual(applyOverlay(labDir), { agentShimmed: true, channelShimmed: true });
+
+    assert.equal(existsSync(join(labDir, "agent", "channels", "eve.mjs")), false);
+    assert.equal(read(labDir, "agent/channels/eve.ctorig.spec.mjs"), ORIGINAL_CHANNEL);
+    assert.equal(read(labDir, "agent/channels/eve.ts"), CHANNEL_SHIM);
+    const before = snapshot(labDir);
+
+    assert.deepEqual(applyOverlay(labDir), { agentShimmed: true, channelShimmed: true });
+    assert.equal(snapshot(labDir), before);
+  });
+});
+
+test("overlay moves an eve channel of every authored extension aside", () => {
+  for (const ext of [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"]) {
+    withTemp((labDir) => {
+      put(labDir, `agent/channels/eve${ext}`, ORIGINAL_CHANNEL);
+
+      assert.equal(applyOverlay(labDir).channelShimmed, true, ext);
+
+      assert.equal(read(labDir, `agent/channels/eve.ctorig.spec${ext}`), ORIGINAL_CHANNEL, ext);
+      assert.equal(read(labDir, "agent/channels/eve.ts"), CHANNEL_SHIM, ext);
+      assert.deepEqual(
+        files(labDir).filter((file) => file.startsWith("agent/channels/")),
+        [`agent/channels/eve.ctorig.spec${ext}`, "agent/channels/eve.ts"],
+        ext,
+      );
+    });
+  }
+});
+
 const STALE = "// stale\n";
+
+test("overlay refuses a JavaScript channel next to a stale original", () => {
+  withTemp((labDir) => {
+    put(labDir, "agent/channels/eve.js", ORIGINAL_CHANNEL);
+    put(labDir, "agent/channels/eve.ctorig.spec.js", STALE);
+
+    assert.throws(() => applyOverlay(labDir), (error: unknown) => error instanceof EngineError && /both exist/.test(error.message));
+    assert.equal(read(labDir, "agent/channels/eve.js"), ORIGINAL_CHANNEL);
+    assert.equal(read(labDir, "agent/channels/eve.ctorig.spec.js"), STALE);
+  });
+});
 
 test("overlay refuses a user's agent.ts that sits next to a stale original, instead of picking one", () => {
   withTemp((labDir) => {

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { test, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { newTypeErrors, readModuleSettings } from "../../src/fix/typecheck.ts";
+import { templatePath } from "../../src/paths.ts";
 
 const TSCONFIG = `{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext","moduleResolution":"bundler"},"include":["agent/**/*.ts"]}`;
 const TOOL = "interface Input { text: string }\nexport const f = (input: Input) => input.text;\n";
@@ -81,6 +83,27 @@ test("the errors of the first edit come first, also when another file sorts befo
   assert.equal(errors?.length, 2);
   assert.match(errors![0]!, /^agent\/tools\/t\.ts: .*orderId/);
   assert.match(errors![1]!, /^agent\/lib\/h\.ts: /);
+});
+
+test("the helper type-checks under noPropertyAccessFromIndexSignature", (t) => {
+  // `process` must be typed here, or the helper would pass before the fix: the app's tsconfig points at the engine's @types.
+  const typeRoots = fileURLToPath(new URL("../../node_modules/@types", import.meta.url)).split(sep).join("/");
+  const tsconfig = JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noPropertyAccessFromIndexSignature: true,
+      module: "nodenext",
+      moduleResolution: "nodenext",
+      skipLibCheck: true,
+      types: ["node"],
+      typeRoots: [typeRoots],
+    },
+  });
+  const root = tempApp(t, {}, tsconfig);
+
+  const errors = newTypeErrors(root, [{ path: "agent/lib/crashtest-idempotency.ts", text: readFileSync(templatePath("idempotency.ts"), "utf8") }]);
+
+  assert.deepEqual(errors, []);
 });
 
 test("an app without tsconfig.json is not checked", (t) => {

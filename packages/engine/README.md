@@ -268,8 +268,9 @@ can be committed.
    inside the app so Node finds the app's own `node_modules`. The app's files are never modified.
 2. **Overlay.** In the lab, `agent/agent.ts` is renamed to `agent/agent.ctorig.spec.ts` and wrapped by a shim that
    keeps the agent as defined but replaces its model with a scripted `mockModel`. crashtest adds the hook
-   `agent/hooks/crashtest_probe.ts` and the lab channel `agent/channels/eve.ts` (the app's own, if any, is renamed
-   to `agent/channels/eve.ctorig.spec.ts`). The lab channel accepts only local callers and gives each session the
+   `agent/hooks/crashtest_probe.ts` and the lab channel `agent/channels/eve.ts` (the app's own, in any of eve's
+   module extensions, `.ts`, `.mts`, `.cts`, `.js`, `.mjs` or `.cjs`, is renamed to `agent/channels/eve.ctorig.spec`
+   plus that extension). The lab channel accepts only local callers and gives each session the
    caller identity that the configuration sets for the tool (`auth`), else eve's local development caller. Tool
    files are never changed.
 3. **Preload.** Every eve process in the lab runs with a preload (`NODE_OPTIONS=--import`). It answers every
