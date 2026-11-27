@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadConfig } from "../../src/config.ts";
+import { loadConfig, sessionAuthFor, type CrashtestConfig } from "../../src/config.ts";
 import { ConfigError } from "../../src/errors.ts";
 
 function appWith(text?: string): string {
@@ -143,8 +143,8 @@ test("config: a misspelled key in effects names its full path", () => {
 });
 
 test("config: a misspelled key in a scenario names its full path", () => {
-  assertUnknownKey({ scenarios: { t: { freetext: ["x"] } } }, /unknown key "scenarios\.t\.freetext"; allowed keys: input, freeText$/);
-  assertUnknownKey({ scenarios: { t: { inputs: {} } } }, /unknown key "scenarios\.t\.inputs"; allowed keys: input, freeText$/);
+  assertUnknownKey({ scenarios: { t: { freetext: ["x"] } } }, /unknown key "scenarios\.t\.freetext"; allowed keys: input, freeText, auth$/);
+  assertUnknownKey({ scenarios: { t: { inputs: {} } } }, /unknown key "scenarios\.t\.inputs"; allowed keys: input, freeText, auth$/);
 });
 
 test("config: a misspelled key in a fixture names its full path", () => {
@@ -152,4 +152,38 @@ test("config: a misspelled key in a fixture names its full path", () => {
     { fixtures: [{ url: "x" }, { url: "y", statuscode: 200 }] },
     /unknown key "fixtures\[1\]\.statuscode"; allowed keys: method, url, status, body$/,
   );
+});
+
+const IDENTITIES: CrashtestConfig = {
+  auth: { authenticator: "slack-webhook", principalId: "U1", principalType: "user", attributes: { team_id: "T1", roles: ["a", "b"] } },
+  scenarios: { watch: { auth: { authenticator: "github", principalId: "app", principalType: "service" } } },
+};
+
+test("auth and scenarios.<tool>.auth accept a session identity", () => {
+  withApp(JSON.stringify(IDENTITIES), (dir) => assert.deepEqual(loadConfig(dir), IDENTITIES));
+});
+
+test("a malformed session identity names the key", () => {
+  const user = { authenticator: "slack-webhook", principalId: "U1", principalType: "user" };
+  const cases: Array<[unknown, RegExp]> = [
+    [{ auth: { ...user, principal: "U1" } }, /unknown key "auth\.principal"/],
+    [{ scenarios: { x: { auth: { ...user, principalId: "" } } } }, /"scenarios\.x\.auth\.principalId" must be a non-empty string/],
+    [{ auth: { ...user, attributes: { team: 7 } } }, /"auth\.attributes\.team" must be a string or an array of strings/],
+  ];
+  for (const [config, pattern] of cases) {
+    withApp(JSON.stringify(config), (dir) => {
+      assert.throws(
+        () => loadConfig(dir),
+        (err: unknown) => err instanceof ConfigError && pattern.test(err.message) && err.message.includes("crashtest.config.json"),
+        JSON.stringify(config),
+      );
+    });
+  }
+});
+
+test("sessionAuthFor prefers the tool's own identity and ignores inherited keys", () => {
+  const config = IDENTITIES;
+  assert.equal(sessionAuthFor(config, "watch")?.authenticator, "github");
+  assert.equal(sessionAuthFor(config, "other")?.authenticator, "slack-webhook");
+  assert.equal(sessionAuthFor({}, "constructor"), undefined);
 });

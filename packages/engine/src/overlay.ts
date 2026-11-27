@@ -30,18 +30,34 @@ const AGENT_SHIM_WITHOUT_ORIGINAL = `${AGENT_SHIM_HEAD}
 export default defineAgent({
 ${AGENT_SHIM_MODEL}`;
 
-/** Lets the driver call the HTTP channel without credentials; the original channel stays next to it. */
+/**
+ * Lets the driver call the HTTP channel without credentials and gives the session the identity a tool checks
+ * (`CT_SESSION_AUTH`, set per cell from `crashtest.config.json`). An original channel stays next to it.
+ */
 const CHANNEL_SHIM = `${GENERATED_HEADER}import { eveChannel } from "eve/channels/eve";
 import { localDev } from "eve/channels/auth";
 
-export default eveChannel({ auth: [localDev()] });
+const local = localDev();
+
+/** Local callers only; a session gets the identity crashtest.config.json sets for the tool, else eve's local caller. */
+export default eveChannel({
+  auth: [
+    async (request) => {
+      const caller = await local(request);
+      if (!caller) return null;
+      const configured = process.env.CT_SESSION_AUTH;
+      return configured ? JSON.parse(configured) : caller;
+    },
+  ],
+});
 `;
 
 /**
  * Overlays the lab in place. Safe to call again: originals are renamed only once, and a file that is
  * already the right content is left untouched (so its modification time stays).
  * `agentShimmed` and `channelShimmed` say whether the lab has an original agent / eve channel that a shim
- * now wraps or replaces. An app without an `agent/agent.ts` still gets the agent shim, just without that wrapping.
+ * now wraps or replaces. An app without an `agent/agent.ts` still gets the agent shim, just without that wrapping,
+ * and an app without an `agent/channels/eve.ts` still gets the lab channel.
  */
 export function applyOverlay(labDir: string): { agentShimmed: boolean; channelShimmed: boolean } {
   const agentDir = join(labDir, "agent");
@@ -54,7 +70,7 @@ export function applyOverlay(labDir: string): { agentShimmed: boolean; channelSh
 
   const channelFile = join(agentDir, "channels", "eve.ts");
   const channelShimmed = moveOriginal(channelFile, join(agentDir, "channels", "eve.ctorig.spec.ts"));
-  if (channelShimmed) writeIfChanged(channelFile, CHANNEL_SHIM);
+  writeIfChanged(channelFile, CHANNEL_SHIM);
 
   return { agentShimmed, channelShimmed };
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { before, test, type TestContext } from "node:test";
+import type { CrashtestConfig } from "../../src/config.ts";
 import type { Discovery } from "../../src/discover.ts";
 import type { Lab } from "../../src/lab.ts";
 import { runLane } from "../../src/lane.ts";
@@ -16,8 +17,8 @@ before(async () => {
   shared = await prepareLab(zooDir);
 }, { timeout: 300_000 });
 
-async function lane(t: TestContext, name: string): Promise<{ result: LaneResult; detail: string }> {
-  const result = await runLane({ lab: shared.lab, tool: tool(shared.discovery, name), config: {}, onProgress: (line) => t.diagnostic(line) });
+async function lane(t: TestContext, name: string, config: CrashtestConfig = {}): Promise<{ result: LaneResult; detail: string }> {
+  const result = await runLane({ lab: shared.lab, tool: tool(shared.discovery, name), config, onProgress: (line) => t.diagnostic(line) });
   const { rating } = result;
   for (const cell of rating.cells) {
     t.diagnostic(`${cell.cellId}: ${cell.kind}${cell.dupClass ? ` (${cell.dupClass})` : ""}, outcome ${cell.outcome}, ${cell.stateChanges}/${cell.expected} effects, ${cell.benignRepeats} benign, attempts ${cell.attempts}${cell.seen ? `, seen ${cell.seen}` : ""}`);
@@ -87,4 +88,17 @@ test("zoo: post_reads is not evaluable for lack of an effect", E2E, async (t) =>
   const { result, detail } = await lane(t, "post_reads");
   assert.equal(result.rating.stars, null, detail);
   assert.equal(result.rating.na?.reason, "no-effect", detail);
+});
+
+test("zoo: session_auth without a session identity is not evaluable and points at auth", E2E, async (t) => {
+  const { result, detail } = await lane(t, "session_auth", {});
+  assert.equal(result.rating.stars, null, detail);
+  assert.equal(result.rating.na?.reason, "baseline-failed", detail);
+  assert.match(result.rating.na?.detail ?? "", /set auth or scenarios\.session_auth\.auth/, detail);
+});
+
+test("zoo: session_auth with its session identity rates 1 star", E2E, async (t) => {
+  const auth = { authenticator: "crashtest-zoo", principalId: "U0ZOO", principalType: "user", attributes: { team_id: "T0ZOO" } };
+  const { result, detail } = await lane(t, "session_auth", { scenarios: { session_auth: { auth } } });
+  assert.equal(result.rating.stars, 1, detail);
 });

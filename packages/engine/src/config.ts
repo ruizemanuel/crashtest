@@ -6,20 +6,34 @@ import { join, resolve } from "node:path";
 import { ConfigError } from "./errors.ts";
 import type { Fixture } from "./preload/fake-provider.ts";
 
+/** The caller identity the lab channel gives a session (eve's `ctx.session.auth.current`), for tools that check it. */
+export interface SessionAuth {
+  authenticator: string;
+  principalId: string;
+  principalType: string;
+  attributes?: Record<string, string | string[]>;
+  issuer?: string;
+  subject?: string;
+}
+
 export interface CrashtestConfig {
-  scenarios?: Record<string, { input?: Record<string, unknown>; freeText?: string[] }>;
+  scenarios?: Record<string, { input?: Record<string, unknown>; freeText?: string[]; auth?: SessionAuth }>;
   identity?: Record<string, string[]>;
   env?: Record<string, string>;
   fixtures?: Fixture[];
   effects?: { ignore?: string[] };
   waivers?: Record<string, string>;
   tools?: { exclude?: string[] };
+  auth?: SessionAuth;
 }
 
 const CONFIG_FILE = "crashtest.config.json";
-const SCENARIO_KEYS = ["input", "freeText"] as const;
+const SCENARIO_KEYS = ["input", "freeText", "auth"] as const;
+const SESSION_AUTH_KEYS = ["authenticator", "principalId", "principalType", "attributes", "issuer", "subject"] as const;
+const SESSION_AUTH_REQUIRED = ["authenticator", "principalId", "principalType"] as const;
+const SESSION_AUTH_OPTIONAL = ["issuer", "subject"] as const;
 const FIXTURE_KEYS = ["method", "url", "status", "body"] as const;
-const ALLOWED_KEYS = ["scenarios", "identity", "env", "fixtures", "effects", "waivers", "tools"] as const;
+const ALLOWED_KEYS = ["scenarios", "identity", "env", "fixtures", "effects", "waivers", "tools", "auth"] as const;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -56,6 +70,23 @@ function validateScenarios(path: string, value: unknown): void {
     rejectUnknownKeys(path, where, body, SCENARIO_KEYS);
     if ("input" in body) objectOf(path, `${where}.input`, body.input);
     if ("freeText" in body && !isStringArray(body.freeText)) bad(path, `${where}.freeText`, "an array of strings");
+    if ("auth" in body) validateSessionAuth(path, `${where}.auth`, body.auth);
+  }
+}
+
+/** A session identity at `where` (`auth` or `scenarios.<tool>.auth`): the shape of eve's `SessionAuthContext`. */
+function validateSessionAuth(path: string, where: string, value: unknown): void {
+  const body = objectOf(path, where, value);
+  rejectUnknownKeys(path, where, body, SESSION_AUTH_KEYS);
+  for (const key of SESSION_AUTH_REQUIRED) {
+    if (typeof body[key] !== "string" || body[key] === "") bad(path, `${where}.${key}`, "a non-empty string");
+  }
+  for (const key of SESSION_AUTH_OPTIONAL) {
+    if (key in body && typeof body[key] !== "string") bad(path, `${where}.${key}`, "a string");
+  }
+  if ("attributes" in body) {
+    const valid = (entry: unknown): boolean => typeof entry === "string" || isStringArray(entry);
+    validateStringMap(path, `${where}.attributes`, body.attributes, valid, "a string or an array of strings");
   }
 }
 
@@ -93,7 +124,15 @@ function validate(path: string, parsed: unknown): CrashtestConfig {
   if ("effects" in config) validateStringListSection(path, "effects", "ignore", config.effects);
   if ("waivers" in config) validateStringMap(path, "waivers", config.waivers, (entry) => typeof entry === "string", "a string");
   if ("tools" in config) validateStringListSection(path, "tools", "exclude", config.tools);
+  if ("auth" in config) validateSessionAuth(path, "auth", config.auth);
   return config as CrashtestConfig;
+}
+
+/** The session identity for `tool`: its own `scenarios.<tool>.auth`, else the top-level `auth`. */
+export function sessionAuthFor(config: CrashtestConfig, tool: string): SessionAuth | undefined {
+  const scenarios = config.scenarios;
+  const own = scenarios !== undefined && Object.hasOwn(scenarios, tool) ? scenarios[tool]?.auth : undefined;
+  return own ?? config.auth;
 }
 
 /**

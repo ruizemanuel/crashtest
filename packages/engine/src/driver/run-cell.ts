@@ -5,7 +5,7 @@
 import type { ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CrashtestConfig } from "../config.ts";
+import { sessionAuthFor, type CrashtestConfig } from "../config.ts";
 import { preloadedLabEnv, type Lab } from "../lab.ts";
 import type { Cell, CellId, LedgerEntry, RunSummary, ToolInfo } from "../types.ts";
 import { HealthMonitor } from "./health.ts";
@@ -47,6 +47,8 @@ const PORT_RELEASE_MS = 5000;
 const READY_LINE = /^\[DEV\] ready at /m;
 const LOG_TAIL_CHARS = 2000;
 const BODY_CHARS = 300;
+/** Read by the lab channel (see the channel shim in overlay.ts). */
+const SESSION_AUTH_VAR = "CT_SESSION_AUTH";
 
 /** `<outDir>/runs/<tool>/<cellId>-a<attempt>`: one directory per attempt, so evidence of earlier attempts stays. */
 export function runDirFor(lab: Lab, tool: string, cellId: CellId, attempt: number): string {
@@ -222,10 +224,15 @@ function prepareRunDir(runDir: string, o: RunCellOptions): string | undefined {
 /**
  * The lab environment of the cell (see `preloadedLabEnv`): the config `env`, then the cell's own `CT_*`. The preload
  * gets `effects.ignore` too, so a request or file write the config says is not an effect never claims the crash point.
+ * The lab channel gets the tool's configured session identity as `CT_SESSION_AUTH`, with the `attributes` eve
+ * requires; without one the variable is left out, whatever the config `env` says, and the channel uses eve's local caller.
  */
 function cellEnv(o: RunCellOptions, runDir: string, fixturesFile: string | undefined): Record<string, string> {
+  const configEnv = Object.fromEntries(Object.entries(o.config.env ?? {}).filter(([name]) => name.toUpperCase() !== SESSION_AUTH_VAR));
+  const auth = sessionAuthFor(o.config, o.tool.name);
   return preloadedLabEnv(o.baseEnv ?? process.env, {
-    ...o.config.env,
+    ...configEnv,
+    ...(auth === undefined ? {} : { [SESSION_AUTH_VAR]: JSON.stringify({ attributes: {}, ...auth }) }),
     CT_RUN_DIR: runDir,
     CT_LAB_DIR: o.lab.labDir,
     CT_CRASH_POINT: o.cell.point,

@@ -101,7 +101,19 @@ function outcomeOf(calls: StreamCall[]): { outcome: CellVerdict["outcome"]; erro
 
 // --- baselines ------------------------------------------------------------------------------------------------
 
-const CONFIG_HINT = (tool: string) => ` — set scenarios.${tool}.input in crashtest.config.json`;
+/** A failure that reads as the tool refusing the lab session's caller (real tools check the channel identity). */
+const AUTH_PROBLEM = /unauthori[sz]ed|authori[sz]ation|authenticat|forbidden|permission denied|not allowed|sign in|\bsession\b|\bcontext\b|\b40[13]\b/i;
+/** A failure that reads as the tool rejecting its input. */
+const INPUT_PROBLEM = /invalid|expected|required|validation|must be|schema/i;
+
+/** What to append to a baseline problem: the configuration key that most likely fixes it. */
+function baselineHint(tool: string, problem: string): string {
+  if (AUTH_PROBLEM.test(problem)) {
+    return ` — set auth or scenarios.${tool}.auth in crashtest.config.json to give the lab session the identity this tool checks`;
+  }
+  if (INPUT_PROBLEM.test(problem)) return ` — set scenarios.${tool}.input in crashtest.config.json`;
+  return ` — see the run directory; crashtest.config.json can set scenarios.${tool}.input, auth, env and fixtures`;
+}
 
 /** Why a baseline run is not usable, or null when it is. The call's own error message wins when there is one. */
 function baselineProblem(tool: string, run: RunSummary): string | null {
@@ -133,7 +145,7 @@ function sameCounts(a: Map<string, number>, b: Map<string, number>): boolean {
 export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, config: CrashtestConfig): BaselineFacts {
   for (const run of [b1, b2]) {
     const problem = baselineProblem(tool, run);
-    if (problem !== null) return { ok: false, reason: "baseline-failed", detail: `${problem}${CONFIG_HINT(tool)}` };
+    if (problem !== null) return { ok: false, reason: "baseline-failed", detail: `${problem}${baselineHint(tool, problem)}` };
   }
   const first = mutatingEntries(b1, config);
   const second = mutatingEntries(b2, config);

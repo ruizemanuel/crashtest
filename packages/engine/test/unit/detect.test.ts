@@ -319,12 +319,14 @@ test("baselineFacts is baseline-failed when the call failed with a validation er
   assert.match(facts.detail, /scenarios\.naive\.input/);
 });
 
+const GENERAL_HINT = " — see the run directory; crashtest.config.json can set scenarios.naive.input, auth, env and fixtures";
+
 test("baselineFacts is baseline-failed for a string error and for the second baseline", () => {
   const failing = summary({ tool: "naive", cellId: "baseline-2", calls: [call({ outcome: "failed", error: "bad amount" })] });
   const facts = baselineFacts("naive", naive(), failing, {});
   assert.ok(!facts.ok);
   assert.equal(facts.reason, "baseline-failed");
-  assert.equal(facts.detail, "bad amount — set scenarios.naive.input in crashtest.config.json");
+  assert.equal(facts.detail, `bad amount${GENERAL_HINT}`);
 });
 
 test("baselineFacts is baseline-failed when a run did not complete, lacks the preload or never called the tool", () => {
@@ -339,9 +341,26 @@ test("baselineFacts is baseline-failed when a run did not complete, lacks the pr
     const facts = baselineFacts("naive", bad, naive({ cellId: "baseline-2" }), {});
     assert.ok(!facts.ok);
     assert.equal(facts.reason, "baseline-failed");
-    assert.match(facts.detail, / — set scenarios\.naive\.input in crashtest\.config\.json$/);
-    assert.ok(facts.detail.length > " — set scenarios.naive.input in crashtest.config.json".length, "the detail says what went wrong");
+    assert.ok(facts.detail.endsWith(GENERAL_HINT), facts.detail);
+    assert.ok(facts.detail.length > GENERAL_HINT.length, "the detail says what went wrong");
   }
+});
+
+test("baseline hints follow the failure", () => {
+  const detailFor = (error: string): string => {
+    const failing = summary({ tool: "naive", calls: [call({ outcome: "failed", error: { message: error } })], ledger: [] });
+    const facts = baselineFacts("naive", failing, naive({ cellId: "baseline-2" }), {});
+    assert.ok(!facts.ok);
+    assert.equal(facts.reason, "baseline-failed");
+    return facts.detail;
+  };
+  const authHint = " — set auth or scenarios.naive.auth in crashtest.config.json to give the lab session the identity this tool checks";
+  for (const error of ["Authorization denied: not in a Slack context", "No GitHub repository on the session. This tool only runs on GitHub-triggered turns."]) {
+    assert.equal(detailFor(error), `${error}${authHint}`);
+  }
+  const invalid = "Invalid input: expected string, received undefined";
+  assert.equal(detailFor(invalid), `${invalid} — set scenarios.naive.input in crashtest.config.json`);
+  assert.equal(detailFor("fetch failed"), `fetch failed${GENERAL_HINT}`);
 });
 
 test("baselineFacts judges the last call to the tool", () => {

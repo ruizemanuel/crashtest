@@ -247,8 +247,10 @@ can be committed.
    inside the app so Node finds the app's own `node_modules`. The app's files are never modified.
 2. **Overlay.** In the lab, `agent/agent.ts` is renamed to `agent/agent.ctorig.spec.ts` and wrapped by a shim that
    keeps the agent as defined but replaces its model with a scripted `mockModel`. crashtest adds the hook
-   `agent/hooks/crashtest_probe.ts` and, when the app has `agent/channels/eve.ts`, a lab channel with local
-   development auth. Tool files are never changed.
+   `agent/hooks/crashtest_probe.ts` and the lab channel `agent/channels/eve.ts` (the app's own, if any, is renamed
+   to `agent/channels/eve.ctorig.spec.ts`). The lab channel accepts only local callers and gives each session the
+   caller identity that the configuration sets for the tool (`auth`), else eve's local development caller. Tool
+   files are never changed.
 3. **Preload.** Every eve process in the lab runs with a preload (`NODE_OPTIONS=--import`). It answers every
    non-loopback HTTP request as a fake provider, writes each request, and each file write the app makes inside the
    lab, to the run's ledger and kills the process at the cell's crash point. Environment variables that look like
@@ -264,7 +266,13 @@ can be committed.
    authored tool that eve does not list is reported as not evaluated.
 5. **Input.** Each tool is called with one input, generated deterministically from its input schema or taken from
    `scenarios.<tool>.input` in the configuration.
-6. **Lanes.** Each tool runs through the cells below; then its verdicts become stars.
+6. **Lanes.** Each tool runs through the cells below; then its verdicts become stars. When a baseline run fails, the
+   tool is not evaluated and the reason ends with the likely fix. A message that mentions authorization or
+   authentication, says unauthorized, forbidden, permission denied, not allowed or sign in, or mentions the session,
+   a context, 401 or 403 points at `auth` or `scenarios.<tool>.auth`, which give the lab session the identity the
+   tool checks. Otherwise, a message about an invalid, expected or required value, a validation, a schema or what a
+   value must be points at `scenarios.<tool>.input`. Anything else points at the run directory and the keys that can
+   help: `scenarios.<tool>.input`, `auth`, `env` and `fixtures`.
 
 ## Cells
 
@@ -349,19 +357,21 @@ silently weaken the test.
   "fixtures": [{ "method": "GET", "url": "https://api.acme.test/v1/orders/*", "status": 200, "body": { "status": "paid" } }],
   "effects": { "ignore": ["https://telemetry.acme.test/*"] },
   "waivers": { "post_note": "Internal notes; a duplicate is harmless." },
-  "tools": { "exclude": ["legacy_sync"] }
+  "tools": { "exclude": ["legacy_sync"] },
+  "auth": { "authenticator": "slack-webhook", "principalType": "user", "principalId": "U0CRASHTEST", "attributes": { "team_id": "T0CRASHTEST" } }
 }
 ```
 
 | Key | Shape | What it does |
 | --- | --- | --- |
-| `scenarios` | `{ "<tool>": { "input"?: object, "freeText"?: string[] } }` | `input` replaces the generated input in every cell. `freeText` names the input fields a model may word differently on a replay; the fresh-id and retry cells reword them, and they are never identity fields. By default, string fields named like `text`, `message`, `body`, `note` or `summary` are free text. |
+| `scenarios` | `{ "<tool>": { "input"?: object, "freeText"?: string[], "auth"?: object } }` | `input` replaces the generated input in every cell. `freeText` names the input fields a model may word differently on a replay; the fresh-id and retry cells reword them, and they are never identity fields. By default, string fields named like `text`, `message`, `body`, `note` or `summary` are free text. `auth` is the session identity of this tool's cells (see `auth`). |
 | `identity` | `{ "<tool>": string[] }` | The input fields that identify one business operation (a recipient, an order id). The recommendations name them as the fields to build an idempotency key from. By default: the required scalar fields that are not free text. |
 | `env` | `{ "<NAME>": string }` | Environment variables for the lab's eve processes. They are applied after the credential-looking variables and the connection URLs are removed, so they always reach the app as given, even a value that the scrub would drop. HTTP requests never leave the lab, so placeholder values are enough; but a database URL, or any other address of a server that is not HTTP, set here is connected to for real. |
 | `fixtures` | `{ "method"?: string, "url": string, "status"?: integer, "body"?: any }[]` | Canned answers of the fake provider, for tools that need a specific response. `url` is matched against the full request URL, where `*` matches any run of characters (including `/`); `method` narrows the match; `status` defaults to 200 and `body` to `{}`. The first matching fixture answers. A mutating request answered by a fixture counts as a state change. |
 | `effects.ignore` | `string[]` | Request URLs, or lab-relative file paths such as `data/cache/*`, that are not effects of the tool, with the same `*` rule, matched against the full URL as the ledger records it (secrets in the query or path redacted) or the path. An ignored request or write stays in the ledger, but it is not counted and never triggers a cell's crash point: the crash comes after the next effect that is not ignored. |
 | `waivers` | `{ "<tool>": string }` | The tool is still tested and rated, and the report shows the reason, but the agent rating leaves it out. |
 | `tools.exclude` | `string[]` | Tools that are not run. `plan` lists them as skipped; the report leaves them out entirely (they do not count in "N of M tools evaluated"). |
+| `auth`, `scenarios.<tool>.auth` | `{ "authenticator": string, "principalId": string, "principalType": string, "attributes"?: { "<name>": string \| string[] }, "issuer"?: string, "subject"?: string }` | The caller identity the lab session gets, as a tool reads it from `ctx.session.auth.current`, for tools that check who is calling (a Slack team, a GitHub installation). `scenarios.<tool>.auth` applies to that tool and wins over the top-level `auth`. The first three fields must be non-empty; `attributes` defaults to `{}`. Without either key, the session gets eve's local development caller. Whatever the identity, the lab channel accepts only local callers. |
 
 ## Limits
 

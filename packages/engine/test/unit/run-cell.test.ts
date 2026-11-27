@@ -82,12 +82,12 @@ test("answerApproval sends the approve option and reports a rejected answer with
  * A stand-in for `eve dev`: prints the ready line and serves health, session create, a stream and answers.
  * Mode "stream-gone": the stream answers 410. Mode "approval-rejected": the stream shows an open approval
  * that never settles and every answer gets a 400. Mode "record-env": as "stream-gone", after writing the
- * CT_EFFECTS_IGNORE it was started with to stub-env.json in the run directory.
+ * CT_EFFECTS_IGNORE and CT_SESSION_AUTH it was started with (null when unset) to stub-env.json in the run directory.
  */
 const STUB_EVE = `const http = require("node:http");
 const fs = require("node:fs");
 const mode = fs.readFileSync("stub-mode", "utf8").trim();
-if (mode === "record-env") fs.writeFileSync(require("node:path").join(process.env.CT_RUN_DIR, "stub-env.json"), JSON.stringify({ ignore: process.env.CT_EFFECTS_IGNORE ?? null }));
+if (mode === "record-env") fs.writeFileSync(require("node:path").join(process.env.CT_RUN_DIR, "stub-env.json"), JSON.stringify({ ignore: process.env.CT_EFFECTS_IGNORE ?? null, sessionAuth: process.env.CT_SESSION_AUTH ?? null }));
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 const server = http.createServer((req, res) => {
   const path = new URL(req.url, "http://stub").pathname;
@@ -145,9 +145,30 @@ test("runCell hands effects.ignore to the preloaded server as CT_EFFECTS_IGNORE"
   };
   assert.deepEqual(await seen({ effects: { ignore: ["https://api.vercel.com/v1/connect/*", ".next/*"] } }), {
     ignore: JSON.stringify(["https://api.vercel.com/v1/connect/*", ".next/*"]),
+    sessionAuth: null,
   });
   // Always set, so a CT_EFFECTS_IGNORE that the config's `env` names cannot stand in for the ignore list.
-  assert.deepEqual(await seen({ env: { CT_EFFECTS_IGNORE: JSON.stringify(["*"]) } }), { ignore: "[]" });
+  assert.deepEqual(await seen({ env: { CT_EFFECTS_IGNORE: JSON.stringify(["*"]) } }), { ignore: "[]", sessionAuth: null });
+});
+
+test("runCell gives the lab session the tool's configured identity", async (t) => {
+  const sessionAuth = async (config: Parameters<typeof runCell>[0]["config"], baseEnv?: NodeJS.ProcessEnv): Promise<unknown> => {
+    const summary = await runCell({ ...stubCell(stubLab(t, "record-env"), 60_000), config, ...(baseEnv ? { baseEnv } : {}) });
+    assert.equal(summary.turnOutcome, "stream-failed", summary.error);
+    const recorded = (JSON.parse(readFileSync(join(summary.runDir, "stub-env.json"), "utf8")) as { sessionAuth: string | null }).sessionAuth;
+    return recorded === null ? null : JSON.parse(recorded);
+  };
+  const slack = { authenticator: "slack-webhook", principalId: "U1", principalType: "user", attributes: { team_id: "T1" } };
+  const github = { authenticator: "github", principalId: "app", principalType: "service" };
+  // The tool's own identity wins over the top-level one; one configured without attributes gets the empty map eve requires.
+  assert.deepEqual(await sessionAuth({ auth: slack, scenarios: { naive: { auth: github } } }), { attributes: {}, ...github });
+  assert.deepEqual(await sessionAuth({ auth: slack, scenarios: { other: { auth: github } } }), slack);
+  assert.equal(await sessionAuth({}), null);
+  // Neither the config's `env` nor the caller's environment can stand in for the configured identity, or add one.
+  const forged = JSON.stringify(github);
+  assert.deepEqual(await sessionAuth({ auth: slack, env: { CT_SESSION_AUTH: forged } }), slack);
+  assert.equal(await sessionAuth({ env: { CT_SESSION_AUTH: forged } }), null);
+  assert.equal(await sessionAuth({}, { ...process.env, CT_SESSION_AUTH: forged }), null);
 });
 
 test("runCell reports the last rejected approval answer when the turn does not settle", async (t) => {
