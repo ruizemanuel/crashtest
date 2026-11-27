@@ -277,8 +277,13 @@ too, counted per file (`WRITE data/state.json`, `APPEND data/outbox.jsonl`): an 
 write that puts in a file the content it already has is a benign repeat. For Stripe, Slack, Resend and GitHub
 the fake provider keeps state, so a repeat that changes nothing (adding a label that is already there) is a
 benign repeat and does not lower the rating. For other hosts every POST counts, and a PUT, PATCH or DELETE repeated
-with the same body is benign. On every host, a repeat with the same `Idempotency-Key` (or `X-Idempotency-Key`)
-header and the same body counts once, as with providers that honor the header.
+with the same body is benign.
+
+A repeat with the same `Idempotency-Key` (or `X-Idempotency-Key`) header and the same body counts once where the
+real service honors the header: Stripe and Resend (the same key with another body gets their conflict error). Slack
+and GitHub ignore the header, so there a repeat with the same key is a second effect. For a host outside the
+catalog the header is assumed to be honored, since the lab cannot know; a 5-star summary that rests on such a repeat
+names the host and says the key is assumed to be honored.
 
 ## Star ratings
 

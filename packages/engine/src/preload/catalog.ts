@@ -26,12 +26,27 @@ export interface Outcome {
   benign?: string;
 }
 
+/** The hosts whose real behavior the fake provider models (see `handleCatalog`). */
+const CATALOG_HOSTS = new Set(["api.stripe.com", "slack.com", "api.resend.com", "api.github.com"]);
 const IDEMPOTENCY_HOSTS = new Set(["api.stripe.com", "api.resend.com"]);
 const LOOKUP_HOSTS = new Set(["api.stripe.com", "slack.com", "api.resend.com", "api.github.com"]);
+
+/** Whether the fake provider models the real service of `host`; any other host gets the generic answers. */
+export function hostInCatalog(host: string): boolean {
+  return CATALOG_HOSTS.has(host.toLowerCase());
+}
 
 /** Whether the real service honors idempotency keys. */
 export function hostSupportsIdempotency(host: string): boolean {
   return IDEMPOTENCY_HOSTS.has(host.toLowerCase());
+}
+
+/**
+ * Whether the fake provider honors an idempotency key sent to `host`: where the real service does, and on every host
+ * outside the catalog, whose real behavior is unknown (a rating that rests on that says it is assumed).
+ */
+export function honorsIdempotencyKey(host: string): boolean {
+  return hostSupportsIdempotency(host) || !hostInCatalog(host);
 }
 
 /** Whether the real service offers a read endpoint an agent could use to look an effect up before repeating it. */

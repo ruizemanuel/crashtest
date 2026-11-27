@@ -27,6 +27,8 @@ export interface CellVerdict {
   recovery: "none" | "replayed" | "interrupted"; outcome: "success" | "uncertain" | "error" | "abandoned" | "missing";
   stateChanges: number; expected: number; benignRepeats: number; attempts: number; seen?: string /* "2 of 3" */;
   invalidReason?: string; error?: string; evidence: EffectEvidence[];
+  /** Hosts outside the fake provider's catalog whose idempotency-key replays count as benign only by assumption. */
+  assumedKeyHosts?: string[];
 }
 export type NaReason = "no-effect" | "baseline-failed" | "baseline-unstable" | "cells-invalid" | "not-discovered";
 export type Stars = 1 | 2 | 3 | 4 | 5;

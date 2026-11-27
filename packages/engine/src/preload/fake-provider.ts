@@ -2,7 +2,7 @@
 // models just enough provider state to tell a real duplicate effect (two refunds) from a benign repeat
 // (re-adding a label that exists). Pure and JSON-serializable: the preload keeps the state across a crash.
 import { createHash } from "node:crypto";
-import { append, handleCatalog, idempotencyConflict, nextId, own, type CatalogRequest, type Outcome } from "./catalog.ts";
+import { append, handleCatalog, honorsIdempotencyKey, idempotencyConflict, nextId, own, type CatalogRequest, type Outcome } from "./catalog.ts";
 import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "./normalize.ts";
 
 export interface FakeRequest {
@@ -67,6 +67,9 @@ export interface FakeProvider {
 
 const NON_MUTATING = new Set(["GET", "HEAD", "OPTIONS"]);
 const JSON_HEADERS = { "content-type": "application/json" };
+
+/** The benign label of a repeat that an idempotency key deduplicated. */
+export const KEY_REPLAY = "idempotency key replay";
 
 function emptyState(): ProviderState {
   return { counters: {}, collections: {}, idempotency: {}, sets: {}, putHashes: {}, fsWrites: {} };
@@ -168,7 +171,9 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
       const outcome = handleCatalog(request, store) ?? generic(request);
       return respond(outcome.status, outcome.body, withBenign({ ...effect, stateChange: outcome.stateChange }, outcome.benign));
     };
-    if (idempotencyKey === undefined) return answer();
+    // A key counts only where the real service honors it. Slack and GitHub ignore the header, so a repeat there is a
+    // real second effect; a host outside the catalog is assumed to honor it (detection names those hosts).
+    if (idempotencyKey === undefined || !honorsIdempotencyKey(url.hostname)) return answer();
 
     const slot = `${url.host} ${idempotencyKey}`;
     const hash = bodyHash(body);
@@ -178,7 +183,7 @@ export function createFakeProvider(state: ProviderState | null, fixtures: Fixtur
       store.idempotency[slot] = { bodyHash: hash, status: result.status, body: result.body };
       return result;
     }
-    if (previous.bodyHash === hash) return respond(previous.status, previous.body, { ...effect, benign: "idempotency key replay" });
+    if (previous.bodyHash === hash) return respond(previous.status, previous.body, { ...effect, benign: KEY_REPLAY });
     const conflict = idempotencyConflict(url.hostname);
     return respond(conflict.status, conflict.body, { ...effect, benign: "idempotency key reused with different body" });
   }

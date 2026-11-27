@@ -96,6 +96,21 @@ test("repeated requests that changed no state keep 5 stars and are called out", 
   assert.equal(rating.recommendation, "Idempotent by nature: no change needed.");
 });
 
+test("5 stars that rest on key replays to a host outside the catalog say the key is assumed honored", () => {
+  const rating = rate([
+    verdict({ benignRepeats: 1, assumedKeyHosts: ["api.acme.test"] }),
+    verdict({ cellId: "post-effect-slow", benignRepeats: 1, assumedKeyHosts: ["notify.acme.test", "api.acme.test"] }),
+    verdict({ cellId: "post-settle" }),
+  ]);
+  assert.equal(rating.stars, 5);
+  assert.equal(
+    rating.summary,
+    "One state change in every cell; repeated requests did not change provider state. The repeats to api.acme.test and notify.acme.test reused an idempotency key, which those hosts are assumed to honor: the fake provider does not model them.",
+  );
+  const one = rate([verdict({ benignRepeats: 1, assumedKeyHosts: ["api.acme.test"] })]);
+  assert.match(one.summary, / The repeats to api\.acme\.test reused an idempotency key, which that host is assumed to honor: the fake provider does not model it\.$/);
+});
+
 // --- invalid cells --------------------------------------------------------------------------------------------
 
 const invalidCell = (cellId: CellVerdict["cellId"], invalidReason = "crash-not-triggered"): CellVerdict => verdict({ cellId, kind: "invalid", invalidReason });

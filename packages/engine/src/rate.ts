@@ -157,9 +157,22 @@ export function rateTool(o: RateInput): ToolRating {
       : "The model got a success, but no effect reached the provider.";
     return { ...base, stars: 4, summary, recommendation: UNCERTAIN_RECOMMENDATION };
   }
-  return benignRepeats
-    ? { ...base, stars: 5, summary: "One state change in every cell; repeated requests did not change provider state.", recommendation: "Idempotent by nature: no change needed." }
-    : { ...base, stars: 5, summary: "One state change in every cell, and the model always got a truthful result.", recommendation: "No change needed." };
+  if (!benignRepeats) {
+    return { ...base, stars: 5, summary: "One state change in every cell, and the model always got a truthful result.", recommendation: "No change needed." };
+  }
+  const summary = `One state change in every cell; repeated requests did not change provider state.${assumedKeyNote(evaluable)}`;
+  return { ...base, stars: 5, summary, recommendation: "Idempotent by nature: no change needed." };
+}
+
+/** What a rating that rests on idempotency keys sent to hosts the fake provider does not model must say. */
+function assumedKeyNote(cells: CellVerdict[]): string {
+  const hosts = [...new Set(cells.flatMap((cell) => cell.assumedKeyHosts ?? []))].sort();
+  if (hosts.length === 0) return "";
+  if (hosts.length === 1) {
+    return ` The repeats to ${hosts[0]} reused an idempotency key, which that host is assumed to honor: the fake provider does not model it.`;
+  }
+  const named = `${hosts.slice(0, -1).join(", ")} and ${hosts.at(-1)}`;
+  return ` The repeats to ${named} reused an idempotency key, which those hosts are assumed to honor: the fake provider does not model them.`;
 }
 
 /**

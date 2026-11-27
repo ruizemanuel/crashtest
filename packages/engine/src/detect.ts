@@ -1,7 +1,9 @@
 // Turns run summaries into facts: what a clean run looks like (baselineFacts) and what a crashed run did
 // compared with it (analyzeCell). Pure: no I/O, no clock.
 import type { CrashtestConfig } from "./config.ts";
+import { hostInCatalog } from "./preload/catalog.ts";
 import { ignoreMatcher } from "./preload/effects-ignore.ts";
+import { KEY_REPLAY } from "./preload/fake-provider.ts";
 import type { Cell, CellVerdict, EffectEvidence, LedgerEntry, NaReason, RunSummary, StreamCall } from "./types.ts";
 
 export type BaselineFacts =
@@ -208,6 +210,9 @@ export function analyzeCell(
   const stateChanges = sum(counts.values());
   const expected = sum(Object.values(base.expected));
   const benignRepeats = mutating.filter((entry) => entry.benign).length;
+  const assumedKeyHosts = [
+    ...new Set(mutating.filter((entry) => entry.benign === KEY_REPLAY).map((entry) => hostOfEndpoint(entry.endpoint))),
+  ].filter((host) => !hostInCatalog(host));
 
   const invalidReason = invalidReasonOf(cell, run, calls);
   let kind: CellVerdict["kind"];
@@ -230,5 +235,6 @@ export function analyzeCell(
     ...(invalidReason !== null ? { invalidReason } : {}),
     ...(error !== undefined ? { error } : {}),
     evidence,
+    ...(assumedKeyHosts.length > 0 ? { assumedKeyHosts } : {}),
   };
 }

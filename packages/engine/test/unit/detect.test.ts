@@ -166,6 +166,24 @@ test("analyzeCell counts benign repeats only among mutating entries", () => {
   assert.equal(v.kind, "clean");
 });
 
+test("analyzeCell names the hosts outside the catalog whose key replays it counted as benign", () => {
+  const acme = { url: "https://api.acme.test:8443/v1/m", endpoint: "POST api.acme.test:8443/v1/m" };
+  const base = { expected: { [REFUNDS]: 1, [acme.endpoint]: 1 }, volatileFields: [] as string[] };
+  const replay = { stateChange: false, benign: "idempotency key replay", idempotencyKey: "k1" };
+  const ledger = [entry(), entry(replay), entry(acme), entry({ ...acme, ...replay }), entry({ ...acme, ...replay })];
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger }), base, {});
+  assert.equal(v.kind, "clean");
+  assert.equal(v.benignRepeats, 3);
+  // Stripe honors the key for real; the other host is only assumed to.
+  assert.deepEqual(v.assumedKeyHosts, ["api.acme.test:8443"]);
+
+  const stripeOnly = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: [entry(), entry(replay)] }), ONE_REFUND, {});
+  assert.equal("assumedKeyHosts" in stripeOnly, false);
+  // Another benign repeat on such a host rests on no assumption.
+  const labels = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: [entry(), entry({ ...acme, stateChange: false, benign: "same request repeated" })] }), ONE_REFUND, {});
+  assert.equal("assumedKeyHosts" in labels, false);
+});
+
 test("analyzeCell reports a duplicate with a stable id as dupClass stable", () => {
   const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: [entry(), entry()] }), ONE_REFUND, {});
   assert.equal(v.kind, "dup");

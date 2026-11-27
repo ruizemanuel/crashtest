@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hostSupportsIdempotency, hostSupportsLookup } from "../../src/preload/catalog.ts";
+import { hostInCatalog, hostSupportsIdempotency, hostSupportsLookup } from "../../src/preload/catalog.ts";
 import { createFakeProvider, type FakeRequest, type FakeResult, type Fixture } from "../../src/preload/fake-provider.ts";
 import { normalizeEndpoint, parseBody, redactBody, redactPath, redactUrl } from "../../src/preload/normalize.ts";
 
@@ -70,6 +70,35 @@ test("the x-idempotency-key header is honored and keys are scoped per host", () 
   assert.equal(b.effect.benign, undefined);
   const replay = p.handle(post("https://api.acme.test/v1/m", { k: 1 }, { "x-idempotency-key": "k1" }));
   assert.equal(replay.effect.benign, "idempotency key replay");
+});
+
+test("a catalog host whose real service ignores idempotency keys ignores them too: a repeat is a real duplicate", () => {
+  const headers = { "idempotency-key": "k1" };
+  const p = createFakeProvider(null);
+  const first = p.handle(post("https://slack.com/api/chat.postMessage", { channel: "C1", text: "hi" }, headers));
+  const again = p.handle(post("https://slack.com/api/chat.postMessage", { channel: "C1", text: "hi" }, headers));
+  for (const r of [first, again]) expectEffect(r, { status: 200, stateChange: true, endpoint: "POST slack.com/api/chat.postMessage" });
+  assert.deepEqual([first.body, again.body].map((body) => (body as { ts: string }).ts), ["1.000100", "2.000100"]);
+  // The ledger still shows the key the tool sent.
+  assert.equal(again.effect.idempotencyKey, "k1");
+
+  const comments = "https://api.github.com/repos/acme/support/issues/7/comments";
+  const a = p.handle(post(comments, { body: "same" }, { "x-idempotency-key": "k2" }));
+  const b = p.handle(post(comments, { body: "same" }, { "x-idempotency-key": "k2" }));
+  for (const r of [a, b]) expectEffect(r, { status: 201, stateChange: true, endpoint: "POST api.github.com/repos/acme/support/issues/:id/comments" });
+  // A different body with the same key is not a conflict either: the key means nothing to these hosts.
+  const other = p.handle(post("https://slack.com/api/chat.postMessage", { channel: "C1", text: "other" }, headers));
+  expectEffect(other, { status: 200, stateChange: true, endpoint: "POST slack.com/api/chat.postMessage" });
+});
+
+test("Stripe, Resend and hosts outside the catalog honor idempotency keys", () => {
+  for (const url of ["https://api.stripe.com/v1/refunds", "https://api.resend.com/emails", "https://api.acme.test/v1/m"]) {
+    const p = createFakeProvider(null);
+    p.handle(post(url, { n: 1 }, { "idempotency-key": "k1" }));
+    const replay = p.handle(post(url, { n: 1 }, { "idempotency-key": "k1" }));
+    assert.equal(replay.effect.stateChange, false, url);
+    assert.equal(replay.effect.benign, "idempotency key replay", url);
+  }
 });
 
 test("an idempotency key reused with a different body is rejected per provider", () => {
@@ -412,6 +441,8 @@ test("host capability helpers", () => {
   assert.equal(hostSupportsIdempotency("api.resend.com"), true);
   assert.equal(hostSupportsIdempotency("slack.com"), false);
   assert.equal(hostSupportsIdempotency("api.acme.test"), false);
+  for (const host of ["api.stripe.com", "slack.com", "api.resend.com", "API.GitHub.com"]) assert.equal(hostInCatalog(host), true, host);
+  for (const host of ["api.acme.test", "hooks.slack.com", "api.stripe.com:8443"]) assert.equal(hostInCatalog(host), false, host);
   for (const host of ["api.stripe.com", "slack.com", "api.resend.com", "api.github.com"]) assert.equal(hostSupportsLookup(host), true, host);
   assert.equal(hostSupportsLookup("api.acme.test"), false);
 });
