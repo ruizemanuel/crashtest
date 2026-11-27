@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MASKED_REPEAT, analyzeCell, baselineFacts, maskRepeats, volatileFieldsOf } from "../../src/detect.ts";
+import { MASKED_REPEAT, analyzeCell, baselineFacts, maskRepeats, refusalOf, volatileFieldsOf } from "../../src/detect.ts";
 import { CORE_CELLS, cellLabel, crashCells } from "../../src/matrix.ts";
 import { KEY_REPLAY } from "../../src/preload/fake-provider.ts";
 import type { Cell, CellId, LedgerEntry } from "../../src/types.ts";
@@ -377,6 +377,80 @@ test("a baseline problem the engine words itself always gets the general hint", 
   assert.ok(!facts.ok);
   assert.equal(facts.reason, "baseline-failed");
   assert.equal(facts.detail, `the turn ended as startup-failed: session create failed: 500 invalid context${GENERAL_HINT}`);
+});
+
+// --- refusals and rejected inputs ---------------------------------------------------------------------------
+
+/** A completed run of tool `t` whose call returned `output`; it makes no state change unless `ledger` says otherwise. */
+function returned(cellId: CellId, output: unknown, ledger: LedgerEntry[] = [catalogEntry()]) {
+  return summary({ tool: "t", cellId, calls: [call({ tool: "t", output })], ledger });
+}
+
+test("a refusal returned as a value is a failed baseline with the auth hint", () => {
+  const output = { success: false, error: "Authorization denied: not in a Slack context" };
+  const facts = baselineFacts("t", returned("baseline-1", output), returned("baseline-2", output), {});
+  assert.ok(!facts.ok);
+  assert.equal(facts.reason, "baseline-failed");
+  assert.match(facts.detail, /^the call returned a refusal: Authorization denied/);
+  assert.match(facts.detail, /— set auth or scenarios\.t\.auth in crashtest\.config\.json to give the lab session the identity this tool checks$/);
+});
+
+test("outputs that report success are not refusals", () => {
+  for (const output of [{ success: true, error: null }, { ok: true, error: "x" }, { error: "" }, "done", null, { ok: true }]) {
+    assert.equal(refusalOf(output), null, JSON.stringify(output));
+  }
+});
+
+test("refusalOf takes the first text that says why, else the output cut to 200 characters", () => {
+  assert.equal(refusalOf({ success: false, error: { message: "No such skill" }, message: "later" }), "No such skill");
+  assert.equal(refusalOf({ ok: false, error: "", message: "", reason: "channel_not_found" }), "channel_not_found");
+  assert.equal(refusalOf({ ok: false, error: "not_in_channel" }), "not_in_channel");
+  const bare = { success: false, detail: "x".repeat(300) };
+  assert.equal(refusalOf(bare), JSON.stringify(bare).slice(0, 200));
+  // Without success or ok, an error is a refusal only when it has words.
+  assert.equal(refusalOf({ error: "No global skill named demo" }), "No global skill named demo");
+  assert.equal(refusalOf({ error: { message: "Rate limited" } }), "Rate limited");
+  assert.equal(refusalOf({ error: { code: 7 } }), null);
+  assert.equal(refusalOf(["error"]), null);
+});
+
+test("a refusal with an effect in the baselines is not re-read", () => {
+  const output = { success: false, error: "Authorization denied: not in a Slack context" };
+  const facts = baselineFacts("t", returned("baseline-1", output, [entry()]), returned("baseline-2", output, [entry()]), {});
+  assert.equal(facts.ok, true);
+});
+
+test("a refusal after the effect in a cell is a phantom failure", () => {
+  const run = crashRun({ calls: [call({ output: { success: false, error: "Already exists" } })], ledger: [entry()] });
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), run, ONE_REFUND, {});
+  assert.equal(v.kind, "phantom-failure");
+  assert.equal(v.outcome, "error");
+  assert.equal(v.error, "Already exists");
+});
+
+test("a refusal that says the outcome is unknown is an uncertain outcome", () => {
+  const run = crashRun({ calls: [call({ output: { ok: false, error: "OUTCOME_UNKNOWN: the upload may have happened" } })], ledger: [entry()] });
+  const v = analyzeCell(cellOf("post-effect-fast-stable"), run, ONE_REFUND, {});
+  assert.equal(v.kind, "clean");
+  assert.equal(v.outcome, "uncertain");
+  assert.equal("error" in v, false);
+});
+
+test("a rejected input is a failed baseline with the input hint, even when the input mentions a session", () => {
+  const rejected = summary({ tool: "t", calls: [], firstToolError: 'Invalid input for tool t: Type validation failed: Value: {"session":"x"}' });
+  const facts = baselineFacts("t", rejected, returned("baseline-2", { ok: true }, [entry()]), {});
+  assert.ok(!facts.ok);
+  assert.equal(facts.reason, "baseline-failed");
+  assert.match(facts.detail, /^the call was rejected before t ran: Invalid input/);
+  assert.ok(facts.detail.endsWith("— set scenarios.t.input in crashtest.config.json"), facts.detail);
+});
+
+test("a rejected input is used only when the stream has no call to the tool", () => {
+  const failing = summary({ tool: "t", calls: [call({ tool: "t", outcome: "failed", error: "boom" })], firstToolError: "Invalid input for tool t: Type validation failed" });
+  const facts = baselineFacts("t", failing, returned("baseline-2", { ok: true }, [entry()]), {});
+  assert.ok(!facts.ok);
+  assert.equal(facts.reason, "baseline-failed");
+  assert.ok(facts.detail.startsWith("boom"), facts.detail);
 });
 
 test("baselineFacts judges the last call to the tool", () => {

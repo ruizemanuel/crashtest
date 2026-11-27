@@ -30,12 +30,16 @@ function lab(t: TestContext, value: ResponderScript): string {
   return runDir;
 }
 
-function state(runDir: string): { emits: number; retried: boolean } {
+function state(runDir: string): { emits: number; retried: boolean; firstToolError?: string } {
   return JSON.parse(readFileSync(join(runDir, "responder.json"), "utf8"));
 }
 
-function request(options: { messages?: Array<{ role: string; text: string }>; toolResults?: Array<{ name: string }> } = {}) {
-  return { messages: options.messages ?? [{ role: "user", text: "go" }], toolResults: options.toolResults ?? [] };
+type ToolResult = { name: string; output?: unknown; isError?: boolean };
+
+/** A model request; a tool result is a success with an empty output unless it says otherwise. */
+function request(options: { messages?: Array<{ role: string; text: string }>; toolResults?: ToolResult[] } = {}) {
+  const toolResults = (options.toolResults ?? []).map((result) => ({ output: {}, isError: false, ...result }));
+  return { messages: options.messages ?? [{ role: "user", text: "go" }], toolResults };
 }
 
 function note(text: string) {
@@ -95,6 +99,46 @@ test("a result from another tool does not count", (t) => {
   const out = createResponder({ runDir, pid: PID })(request({ toolResults: [{ name: "lookup" }] }));
   assert.ok(typeof out === "object");
   assert.equal(out.toolCalls[0]!.name, "notify");
+});
+
+test("the responder records the first error result of the tool under test", (t) => {
+  const runDir = lab(t, script("stable"));
+  const rejected = "Invalid input for tool notify: Type validation failed";
+  const errors = [
+    { name: "notify", output: rejected, isError: true },
+    { name: "notify", output: "a later error", isError: true },
+  ];
+  assert.equal(createResponder({ runDir, pid: PID })(request({ toolResults: errors })), "crashtest: done");
+  assert.equal(state(runDir).firstToolError, rejected);
+  // A restarted process keeps the first one.
+  const later = [...errors, { name: "notify", output: { message: "another" }, isError: true }];
+  assert.equal(createResponder({ runDir, pid: 9999 })(request({ toolResults: later })), "crashtest: done");
+  assert.equal(state(runDir).firstToolError, rejected);
+
+  // An output that is not text is recorded as JSON, at most 500 characters.
+  const other = lab(t, script("stable"));
+  const output = { message: "x".repeat(600) };
+  assert.equal(createResponder({ runDir: other, pid: PID })(request({ toolResults: [{ name: "notify", output, isError: true }] })), "crashtest: done");
+  assert.equal(state(other).firstToolError, JSON.stringify(output).slice(0, 500));
+});
+
+test("the first error result is recorded before the answer to an interrupted-attempt note", (t) => {
+  const runDir = lab(t, script("stable"));
+  const respond = createResponder({ runDir, pid: PID });
+  respond(request()); // the attempt that was interrupted
+  const retryRejected = { ...note(INTERRUPTED), toolResults: [{ name: "notify", output: "Invalid input for tool notify", isError: true }] };
+  assert.ok(typeof respond(retryRejected) === "object", "the note still gets its one retry");
+  assert.deepEqual(state(runDir), { emits: 2, retried: true, firstToolError: "Invalid input for tool notify" });
+});
+
+test("error results of other tools and non-error results record nothing", (t) => {
+  const runDir = lab(t, script("stable"));
+  const results = [
+    { name: "lookup", output: "Invalid input for tool lookup", isError: true },
+    { name: "notify", output: { success: false, error: "denied" }, isError: false },
+  ];
+  assert.equal(createResponder({ runDir, pid: PID })(request({ toolResults: results })), "crashtest: done");
+  assert.throws(() => state(runDir), { code: "ENOENT" }, "nothing to record, so nothing is persisted");
 });
 
 test("uncertain note -> one fresh retry, then done", (t) => {

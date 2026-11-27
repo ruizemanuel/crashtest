@@ -154,14 +154,43 @@ function isUncertain(error: unknown): boolean {
   return UNCERTAIN.test(errorMessage(error)) || UNCERTAIN.test(whole);
 }
 
+function nonEmptyText(value: unknown): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+/** The output's `error` when it has words: a non-empty string, or the non-empty `message` of an object. */
+function errorText(error: unknown): string | null {
+  return nonEmptyText(error) ?? (isRecord(error) ? nonEmptyText(error.message) : null);
+}
+
+/**
+ * The refusal text of a call that returned its failure as a value instead of throwing, as real templates do
+ * (`{ success: false, error }`), or null when the output does not read as a refusal. An output with `success` or
+ * `ok` false is a refusal; its text is the first one among `error`, `error.message`, `message` and `reason`, else the
+ * output itself, cut to 200 characters. Without either flag set to true, an `error` with words is a refusal too.
+ */
+export function refusalOf(output: unknown): string | null {
+  if (!isRecord(output)) return null;
+  if (output.success === false || output.ok === false) {
+    return errorText(output.error) ?? nonEmptyText(output.message) ?? nonEmptyText(output.reason) ?? (JSON.stringify(output) ?? "").slice(0, 200);
+  }
+  if (output.success === true || output.ok === true) return null;
+  return errorText(output.error);
+}
+
 function callsTo(run: RunSummary): StreamCall[] {
   return run.calls.filter((candidate) => candidate.tool === run.tool);
 }
 
+/** A completed call whose output is a refusal counts as the error the model got. */
 function outcomeOf(calls: StreamCall[]): { outcome: CellVerdict["outcome"]; error?: string } {
   const last = calls.findLast((candidate) => SETTLED.has(candidate.outcome));
   if (!last) return { outcome: "missing" };
-  if (last.outcome === "completed") return { outcome: "success" };
+  if (last.outcome === "completed") {
+    const refusal = refusalOf(last.output);
+    if (refusal === null) return { outcome: "success" };
+    return UNCERTAIN.test(refusal) ? { outcome: "uncertain" } : { outcome: "error", error: refusal };
+  }
   if (last.outcome === "abandoned") return { outcome: "abandoned" };
   if (isUncertain(last.error)) return { outcome: "uncertain" };
   return { outcome: "error", error: errorMessage(last.error) };
@@ -178,14 +207,18 @@ const INPUT_PROBLEM = /invalid|expected|required|validation|must be|schema/i;
 interface BaselineProblem {
   text: string;
   toolError: boolean;
+  /** The AI SDK rejected the call's input before the tool ran. */
+  rejectedInput?: true;
 }
 
 /**
- * What to append to a baseline problem: the configuration key that most likely fixes it. Only the tool's own error
- * is read for words; the engine's own text (a server that did not start, a session create that failed, a log tail)
- * names sessions and contexts of its own, so it always gets the general hint.
+ * What to append to a baseline problem: the configuration key that most likely fixes it. A rejected input always
+ * points at the input: the rejection quotes the input, whose values may name a session or a context. Otherwise only
+ * the tool's own error is read for words; the engine's own text (a server that did not start, a session create that
+ * failed, a log tail) names sessions and contexts of its own, so it always gets the general hint.
  */
 function baselineHint(tool: string, problem: BaselineProblem): string {
+  if (problem.rejectedInput) return ` — set scenarios.${tool}.input in crashtest.config.json`;
   if (problem.toolError && AUTH_PROBLEM.test(problem.text)) {
     return ` — set auth or scenarios.${tool}.auth in crashtest.config.json to give the lab session the identity this tool checks`;
   }
@@ -193,9 +226,16 @@ function baselineHint(tool: string, problem: BaselineProblem): string {
   return ` — see the run directory; crashtest.config.json can set scenarios.${tool}.input, auth, env and fixtures`;
 }
 
-/** Why a baseline run is not usable, or null when it is. The call's own error message wins when there is one. */
+/**
+ * Why a baseline run is not usable, or null when it is. A call whose input the AI SDK rejected never reaches eve's
+ * stream, so without a call the error result the model saw (`firstToolError`) says why. Otherwise the call's own
+ * error message wins when there is one.
+ */
 function baselineProblem(tool: string, run: RunSummary): BaselineProblem | null {
   const last = callsTo(run).at(-1);
+  if (run.preloadReady && last === undefined && run.firstToolError !== undefined) {
+    return { text: `the call was rejected before ${tool} ran: ${run.firstToolError}`, toolError: true, rejectedInput: true };
+  }
   const completed = run.turnOutcome === "completed" && run.preloadReady && last?.outcome === "completed";
   if (completed) return null;
   const message = errorMessage(last?.error);
@@ -244,6 +284,13 @@ export function baselineFacts(tool: string, b1: RunSummary, b2: RunSummary, conf
     };
   }
   if (counts1.size === 0) {
+    // A tool that refuses by returning a value is not a tool without effects: say why it changed nothing.
+    for (const run of [b1, b2]) {
+      const text = refusalOf(callsTo(run).at(-1)?.output);
+      if (text !== null) {
+        return { ok: false, reason: "baseline-failed", detail: `the call returned a refusal: ${text}${baselineHint(tool, { text, toolError: true })}` };
+      }
+    }
     return { ok: false, reason: "no-effect", detail: "No external effect observed in the baseline." };
   }
   return {

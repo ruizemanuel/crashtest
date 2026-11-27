@@ -88,6 +88,7 @@ export async function runCell(o: RunCellOptions): Promise<RunSummary> {
   }
 
   const ledger = readLedger(join(runDir, "ledger.jsonl"), drive.errors);
+  const firstToolError = readFirstToolError(join(runDir, "responder.json"));
   const summary: RunSummary = {
     tool: o.tool.name,
     cellId: o.cell.id,
@@ -107,6 +108,7 @@ export async function runCell(o: RunCellOptions): Promise<RunSummary> {
     turnOutcome: drive.turnOutcome,
     approvals: drive.approvals,
     calls: drive.stream?.calls ?? [],
+    ...(firstToolError === undefined ? {} : { firstToolError }),
     ledger,
     wallMs: Date.now() - t0,
     runDir,
@@ -411,6 +413,19 @@ function readLedger(file: string, errors: string[]): LedgerEntry[] {
     }
   });
   return entries;
+}
+
+/**
+ * The first error result of the tool under test that the model saw, as the lab's responder recorded it in its state.
+ * A missing or unreadable state, or one without that text, gives none.
+ */
+function readFirstToolError(file: string): string | undefined {
+  try {
+    const value = (JSON.parse(readFileSync(file, "utf8")) as { firstToolError?: unknown }).firstToolError;
+    return typeof value === "string" && value !== "" ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readText(file: string): string | null {

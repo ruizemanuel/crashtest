@@ -21,7 +21,9 @@ test("smoke: discover the zoo", { timeout: 900_000 }, async () => {
     "post_reads",
     "put_timestamped",
     "readonly",
+    "refuses_as_value",
     "session_auth",
+    "strict_input",
     "upstream_key",
   ]);
   assert.equal(discovery.eve.version, "1.5.0"); assert.equal(discovery.eve.capabilities.replayNever, false);

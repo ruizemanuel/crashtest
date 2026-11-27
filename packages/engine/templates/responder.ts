@@ -18,16 +18,20 @@ export interface ResponderScript {
 interface ResponderState {
   emits: number;
   retried: boolean;
+  /** The first error result of the tool under test, such as an input the AI SDK rejected before the tool ran. */
+  firstToolError?: string;
 }
 
 interface ResponderRequest {
   messages: readonly { role: string; text: string }[];
-  toolResults: readonly { name: string }[];
+  /** As eve's `MockModelToolResult`: `isError` is true for a failed or denied call. */
+  toolResults: readonly { name: string; output: unknown; isError: boolean }[];
 }
 
 type ResponderResponse = string | { toolCalls: { name: string; input: unknown; id?: string }[] };
 
 const DONE = "crashtest: done";
+const ERROR_CHARS = 500;
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -55,7 +59,8 @@ function loadScript(runDir: string): ResponderScript {
 function loadState(runDir: string): ResponderState {
   try {
     const state = readJson(join(runDir, "responder.json")) as Partial<ResponderState>;
-    return { emits: Number(state.emits) || 0, retried: state.retried === true };
+    const firstToolError = typeof state.firstToolError === "string" ? { firstToolError: state.firstToolError } : {};
+    return { emits: Number(state.emits) || 0, retried: state.retried === true, ...firstToolError };
   } catch (error) {
     if (isMissing(error)) return { emits: 0, retried: false };
     throw error;
@@ -86,6 +91,12 @@ function interruptedLine(messages: ResponderRequest["messages"], tool: string): 
   return null;
 }
 
+/** A tool output as text: text as it is, anything else as JSON, at most `ERROR_CHARS` characters. */
+function outputText(output: unknown): string {
+  const text = typeof output === "string" ? output : (JSON.stringify(output) ?? String(output));
+  return text.slice(0, ERROR_CHARS);
+}
+
 function perturb(input: Record<string, unknown>, fields: readonly string[], emits: number): Record<string, unknown> {
   const out = { ...input };
   for (const key of fields) {
@@ -102,6 +113,14 @@ export function createResponder(env: { runDir?: string; pid?: number } = {}): (r
     const pid = env.pid ?? process.pid;
     const script = loadScript(runDir);
     const state = loadState(runDir);
+
+    // Before any answer: a call whose input the AI SDK rejected never reaches eve's stream, and this error result is
+    // its only trace. Crashtest reads it from responder.json after the run.
+    const failed = req.toolResults.find((result) => result.name === script.tool && result.isError);
+    if (failed !== undefined && state.firstToolError === undefined) {
+      state.firstToolError = outputText(failed.output);
+      saveState(runDir, state);
+    }
 
     const emit = (mode: "stable" | "fresh"): ResponderResponse => {
       state.emits += 1;

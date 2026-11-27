@@ -295,6 +295,10 @@ can be committed.
    value, a validation, a schema or what a value must be, it points at `scenarios.<tool>.input`. Anything else,
    including every failure crashtest reports itself (a server that did not start, a turn that did not complete),
    points at the run directory and the keys that can help: `scenarios.<tool>.input`, `auth`, `env` and `fixtures`.
+   A tool that refuses by returning a value instead of throwing, such as `{ success: false, error }`, and changes
+   nothing in either baseline is not evaluated either: the reason quotes the refusal and gets its hint by the same
+   rules. When the AI SDK rejects the call's input before the tool runs, eve's stream shows no call at all; the reason
+   then quotes the rejection the model got and always points at `scenarios.<tool>.input`.
 
 ## Cells
 
@@ -372,7 +376,7 @@ repeat names the host and says the key is assumed to be honored.
 | Stars | The tool, across the crash cells |
 | --- | --- |
 | ★★★★★ 5 | Made exactly one state change in every cell, and the model always got a truthful result: a success, or an explicit uncertain-outcome error such as `OUTCOME_UNKNOWN`. |
-| ★★★★☆ 4 | Never ran twice, but in some cell the model got a misleading result: an error although the effect happened, or a success although no effect reached the provider. |
+| ★★★★☆ 4 | Never ran twice, but in some cell the model got a misleading result: an error although the effect happened, or a success although no effect reached the provider. A refusal that the tool returns as a value after the effect, such as `{ success: false, error }`, counts as the error the model got. |
 | ★★★☆☆ 3 | Ran twice only when the call came back with a new id (fresh id or a retry by the model): its protection is tied to `ctx.callId`. |
 | ★★☆☆☆ 2 | Ran twice when the step was replayed with the same call id, but the tool requires approval. |
 | ★☆☆☆☆ 1 | Ran twice when the step was replayed with the same call id, and the tool requires no approval. |

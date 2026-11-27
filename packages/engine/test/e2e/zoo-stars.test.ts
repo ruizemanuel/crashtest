@@ -121,3 +121,26 @@ test("zoo: session_auth with its session identity rates 1 star", E2E, async (t) 
   const { result, detail } = await lane(t, "session_auth", { scenarios: { session_auth: { auth } } });
   assert.equal(result.rating.stars, 1, detail);
 });
+
+test("zoo: refuses_as_value is not evaluable and points at auth", E2E, async (t) => {
+  const { result, detail } = await lane(t, "refuses_as_value");
+  assert.equal(result.rating.stars, null, detail);
+  assert.equal(result.rating.na?.reason, "baseline-failed", detail);
+  assert.ok(
+    result.rating.na?.detail.endsWith(" — set auth or scenarios.refuses_as_value.auth in crashtest.config.json to give the lab session the identity this tool checks"),
+    detail,
+  );
+});
+
+test("zoo: strict_input is not evaluable and points at its input", E2E, async (t) => {
+  const { result, detail } = await lane(t, "strict_input");
+  assert.equal(result.rating.stars, null, detail);
+  assert.equal(result.rating.na?.reason, "baseline-failed", detail);
+  assert.match(result.rating.na?.detail ?? "", /rejected before strict_input ran/, detail);
+  assert.ok(result.rating.na?.detail.endsWith("— set scenarios.strict_input.input in crashtest.config.json"), detail);
+});
+
+test("zoo: strict_input with a matching input rates 1 star", E2E, async (t) => {
+  const { result, detail } = await lane(t, "strict_input", { scenarios: { strict_input: { input: { ticketId: "TCK-1" } } } });
+  assert.equal(result.rating.stars, 1, detail);
+});

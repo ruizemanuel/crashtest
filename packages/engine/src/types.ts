@@ -20,6 +20,11 @@ export interface RunSummary {
   serverDied: boolean; killedBy: "crash-point" | "harness" | "unexpected" | null; restarted: boolean;
   turnOutcome: string;       // completed|failed|cancelled|timeout|startup-failed|died-after-resume|stream-failed
   approvals: number; calls: StreamCall[]; ledger: LedgerEntry[]; wallMs: number; runDir: string; error?: string;
+  /**
+   * The first error result for the tool under test that the model saw, at most 500 characters, as the lab's responder
+   * recorded it. It is the only trace of a call whose input the AI SDK rejected before the tool ran.
+   */
+  firstToolError?: string;
 }
 export type VerdictKind = "clean" | "dup" | "phantom-failure" | "lost-effect" | "invalid";
 export interface EffectEvidence { endpoint: string; count: number; expected: number; diffFields: string[] }
