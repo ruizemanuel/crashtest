@@ -335,10 +335,14 @@ fields (a token, a password), so a repeat whose only difference is in one of the
 is benign too, and the summary says that the write differed only in a redacted field. A fixture's answer names no
 object, so a write that a fixture answers keeps counting as a state change.
 
-The fresh-id and retry cells reword the input's free-text fields. A repeated overwrite whose body carries such a
-field (a `description`, a `note`) therefore differs from the earlier write in a field the baselines agree on: it
-still counts as a second state change, and the tool can get 3 stars, although the real service holds one object
-with the reworded text.
+The fresh-id and retry cells reword the input's free-text fields: each reworded value ends in ` (rewritten <n>)`, as
+when a real model words a call differently on a replay. A PUT or DELETE that writes again an object the fake provider
+names, and differs from the earlier write only in that reworded text (and in fields that vary between the
+baselines), is a benign repeat too: the real service holds one object, with the reworded text. The lab looks for its
+marker in every string of the body, at any depth, including JSON or Markdown held in a string. A 5-star summary that
+rests on such a repeat names the reworded fields, or the body text when the body is not a JSON object. The lab
+recognizes only its own marker: a tool that transforms the text before it writes it (a slug, a hash, a cut, a change
+of case) still makes the reworded write a second state change, and the tool can get 3 stars.
 
 Vercel Blob (`vercel.com/api/blob`, with the requests that `@vercel/blob` sends) is modeled per object. A target is a
 pathname or a full blob URL, which stands for its decoded path:
@@ -466,6 +470,8 @@ silently weaken the test.
   module extensions stays in the lab next to the lab's `agent/agent.ts`, and eve reports two module sources for the
   agent.
 - Every approval is approved.
+- Reworded free text is recognized only in a PUT or DELETE to an object the fake provider names. A PATCH, a file
+  write, and a write that a fixture answers still count a reworded repeat as a second state change.
 - Hosts outside the fake provider's catalog get a generic success answer; a tool that needs a specific response
   needs a fixture.
 - The fake Vercel Blob store does not serve the content of an object: a read from `*.blob.vercel-storage.com` gets

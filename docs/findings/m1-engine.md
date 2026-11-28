@@ -34,6 +34,14 @@ delete is not found), and the other seven tools are not evaluated (no effect). E
 the engine hardening" are resolved and finding 2 is resolved in part. The decision is now PRIMARY (see "S5 after the
 pre-M3 batch").
 
+Update (2026-11-27, engine at `2b2b168`): the case that "S5 after the pre-M3 batch" leaves uncovered, a replay of
+`create_skill` with a reworded `description`, is now judged a benign repeat when the only differences from the
+earlier write are the lab's rewording (` (rewritten <n>)`) and fields that vary between the baselines. The zoo tool
+`blob_reworded` shows it: 5 stars with benign repeats in 6 runs, where the engine at `24409fb` gives 3 stars in 9
+runs ("Ran twice when the replayed call got a new id and rewritten text (2 effects, expected 1)."). The SRE ratings
+above do not change, because no cell of that run sent a call again with reworded text. Full e2e suite on `2b2b168`:
+38 tests, 37 pass, 1 skipped (POSIX only), 0 fail.
+
 ## Engine verification
 
 ### Call id and turn id across a replay
