@@ -757,6 +757,23 @@ test("a reworded value that names a second object stays a state change", () => {
   assert.deepEqual(maskRepeats(writes, {}), { entries: writes, maskedFields: [], rewordedFields: [] });
 });
 
+test("a reworded value in the query stays a state change", () => {
+  // The object's name leaves out the query, but a key there that the replay reworded names a second record.
+  const writes = [
+    profileWrite("PUT", { key: "d", v: 1 }, { url: `${PROFILE_URL}?key=d` }),
+    profileWrite("PUT", { key: "d (rewritten 2)", v: 1 }, { url: `${PROFILE_URL}?key=d+%28rewritten+2%29` }),
+  ];
+  assert.deepEqual(maskRepeats(writes, {}), { entries: writes, maskedFields: [], rewordedFields: [] });
+
+  // A write to another URL in between does not hide an earlier write to the same URL that the reworded one matches.
+  const between = [
+    profileWrite("PUT", { v: 1, note: "d" }, { url: `${PROFILE_URL}?rev=1` }),
+    profileWrite("PUT", { v: 1, note: "d" }, { url: `${PROFILE_URL}?rev=2` }),
+    profileWrite("PUT", { v: 1, note: "d (rewritten 2)" }, { url: `${PROFILE_URL}?rev=1` }),
+  ];
+  assert.deepEqual(maskRepeats(between, {}).entries[2], { ...between[2], stateChange: false, benign: REWORDED_REPEAT });
+});
+
 test("a reworded POST stays a state change", () => {
   // Even when an object is named, a POST creates: only PUT and DELETE overwrite.
   const object = { object: "POST api.acme-store.test/v1/profiles/42" };

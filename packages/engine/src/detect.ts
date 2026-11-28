@@ -190,9 +190,9 @@ function applied(entry: LedgerEntry): boolean {
  * `REDACTED_FIELD` for a pair whose bodies differ in no key but hold a redacted value.
  *
  * A pair whose bodies are the same only once the lab's rewording is also stripped (`withoutRewording`) is a benign
- * repeat too, labeled `REWORDED_REPEAT`: the fresh-id and retry cells reworded the call's free text, and the service
- * overwrites the object with it. `rewordedFields` lists the other keys whose values differed in those pairs, or
- * `REWORDED_TEXT` for a body that is not an object.
+ * repeat too, labeled `REWORDED_REPEAT`, when the earlier write went to the same URL, query included: the fresh-id and
+ * retry cells reworded the call's free text, and the service overwrites the object with it. `rewordedFields` lists the
+ * other keys whose values differed in those pairs, or `REWORDED_TEXT` for a body that is not an object.
  */
 export function maskRepeats(
   entries: LedgerEntry[],
@@ -204,14 +204,23 @@ export function maskRepeats(
     const { object } = entry;
     if (object === undefined || entry.kind !== "http" || !entry.stateChange || !OVERWRITES.has(entry.method)) return entry;
     const skip = Object.hasOwn(volatile, entry.endpoint) ? (volatile[entry.endpoint] ?? []) : [];
+    const plain = (body: unknown): string => canonical(withoutKeys(body, skip));
     const unreworded = (body: unknown): string => canonical(withoutRewording(withoutKeys(body, skip)));
-    const body = unreworded(entry.body);
+    const body = plain(entry.body);
+    const text = unreworded(entry.body);
+    // The object's name leaves out the query, so reworded text counts as an overwrite only at the same URL: a key in
+    // the query that the replay reworded names a second record.
     const earlier = entries
       .slice(0, index)
-      .findLast((candidate) => applied(candidate) && candidate.object === object && unreworded(candidate.body) === body);
+      .findLast(
+        (candidate) =>
+          applied(candidate) &&
+          candidate.object === object &&
+          (plain(candidate.body) === body || (candidate.url === entry.url && unreworded(candidate.body) === text)),
+      );
     if (earlier === undefined) return entry;
     const differing = differingKeys(earlier.body, entry.body);
-    if (canonical(withoutKeys(earlier.body, skip)) === canonical(withoutKeys(entry.body, skip))) {
+    if (plain(earlier.body) === body) {
       const hidden = differing.length === 0 && (holdsRedacted(earlier.body) || holdsRedacted(entry.body));
       maskedFields.push(...(hidden ? [REDACTED_FIELD] : differing));
       return { ...entry, stateChange: false, benign: MASKED_REPEAT };
