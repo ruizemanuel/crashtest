@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MASKED_REPEAT, REDACTED_FIELD, analyzeCell, baselineFacts, maskRepeats, refusalOf, volatileFieldsOf } from "../../src/detect.ts";
+import {
+  MASKED_REPEAT,
+  REDACTED_FIELD,
+  REWORDED_REPEAT,
+  REWORDED_TEXT,
+  analyzeCell,
+  baselineFacts,
+  maskRepeats,
+  refusalOf,
+  volatileFieldsOf,
+  withoutRewording,
+} from "../../src/detect.ts";
 import { CORE_CELLS, cellLabel, crashCells } from "../../src/matrix.ts";
 import { KEY_REPLAY } from "../../src/preload/fake-provider.ts";
 import { redactBody } from "../../src/preload/normalize.ts";
@@ -648,7 +659,7 @@ test("a repeat that differs only in a redacted field is masked and named as such
 test("a repeat that changes a field the baselines agree on is still a state change", () => {
   const volatile = { [PROFILE_PUT]: ["updatedAt"] };
   const writes = [profileWrite("PUT", { count: 1, updatedAt: "1" }), profileWrite("PUT", { count: 2, updatedAt: "2" })];
-  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [], rewordedFields: [] });
   const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
   assert.equal(v.kind, "dup");
   assert.equal(v.stateChanges, 2);
@@ -659,7 +670,7 @@ test("a write to another object is not a repeat", () => {
   const volatile = { [PROFILE_PUT]: ["updatedAt"] };
   const other = { url: "https://api.acme-store.test/v1/profiles/43", object: "PUT api.acme-store.test/v1/profiles/43" };
   const writes = [profileWrite("PUT", { name: "Ada" }), profileWrite("PUT", { name: "Ada" }, other)];
-  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [], rewordedFields: [] });
   const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
   assert.equal(v.stateChanges, 2);
   assert.equal(v.kind, "dup");
@@ -674,7 +685,7 @@ test("a fixture-answered PUT repeat stays a state change", () => {
     [fixturePut({ name: "Ada" }), fixturePut({ name: "Ada" })],
   ];
   for (const writes of cases) {
-    assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+    assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [], rewordedFields: [] });
     const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
     assert.equal(v.kind, "dup");
     assert.equal(v.stateChanges, 2);
@@ -689,7 +700,7 @@ test("a write the provider did not apply never anchors a mask", () => {
     profileWrite("PUT", { text: "B", updatedAt: "2" }, { stateChange: false, status: 412 }),
     profileWrite("PUT", { text: "B", updatedAt: "3" }),
   ];
-  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [], rewordedFields: [] });
   const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
   assert.equal(v.kind, "dup");
   assert.equal(v.stateChanges, 2);
@@ -703,10 +714,100 @@ test("a write the provider did not apply never anchors a mask", () => {
   assert.deepEqual(maskRepeats(held, volatile).entries, [held[0], { ...held[1], stateChange: false, benign: MASKED_REPEAT }]);
 });
 
+test("withoutRewording strips the responder's marker at any depth", () => {
+  const value = {
+    description: "a (rewritten 2)",
+    nested: { list: ["b (rewritten 3)", 4] },
+    payload: JSON.stringify({ note: "c (rewritten 2)" }),
+  };
+  const before = structuredClone(value);
+  assert.deepEqual(withoutRewording(value), { description: "a", nested: { list: ["b", 4] }, payload: JSON.stringify({ note: "c" }) });
+  assert.deepEqual(value, before, "the input is not mutated");
+  assert.equal(withoutRewording("line (rewritten 2)\n"), "line\n");
+  assert.equal(withoutRewording(7), 7);
+  assert.equal(withoutRewording(null), null);
+});
+
+test("a reworded overwrite of the same object is a benign repeat that names the reworded field", () => {
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const writes = [
+    profileWrite("PUT", { noteId: "n1", description: "d", updatedAt: "t1" }),
+    profileWrite("PUT", { noteId: "n1", description: "d (rewritten 2)", updatedAt: "t2" }),
+  ];
+  const masked = maskRepeats(writes, volatile);
+  assert.deepEqual(masked.entries, [writes[0], { ...writes[1], stateChange: false, benign: REWORDED_REPEAT }]);
+  assert.deepEqual(masked.maskedFields, ["updatedAt"]);
+  assert.deepEqual(masked.rewordedFields, ["description"]);
+});
+
+test("a reworded text body is named as the body text", () => {
+  const writes = [profileWrite("PUT", "%PDF-1.7 receipt\nnote\n"), profileWrite("PUT", "%PDF-1.7 receipt\nnote (rewritten 2)\n")];
+  const masked = maskRepeats(writes, {});
+  assert.deepEqual(masked.entries, [writes[0], { ...writes[1], stateChange: false, benign: REWORDED_REPEAT }]);
+  assert.deepEqual(masked.rewordedFields, [REWORDED_TEXT]);
+  assert.deepEqual(masked.maskedFields, []);
+});
+
+test("a reworded value that names a second object stays a state change", () => {
+  // The text became part of the path: the store holds two objects.
+  const writes = [
+    profileWrite("PUT", { description: "d" }, { object: "PUT api.acme-store.test/v1/notes/d" }),
+    profileWrite("PUT", { description: "d (rewritten 2)" }, { object: "PUT api.acme-store.test/v1/notes/d (rewritten 2)" }),
+  ];
+  assert.deepEqual(maskRepeats(writes, {}), { entries: writes, maskedFields: [], rewordedFields: [] });
+});
+
+test("a reworded POST stays a state change", () => {
+  // Even when an object is named, a POST creates: only PUT and DELETE overwrite.
+  const object = { object: "POST api.acme-store.test/v1/profiles/42" };
+  const writes = [
+    profileWrite("POST", { noteId: "n1", description: "d" }, object),
+    profileWrite("POST", { noteId: "n1", description: "d (rewritten 2)" }, object),
+  ];
+  assert.deepEqual(maskRepeats(writes, {}), { entries: writes, maskedFields: [], rewordedFields: [] });
+});
+
+test("a reworded repeat that also changes another field stays a state change", () => {
+  const writes = [
+    profileWrite("PUT", { id: "n1", description: "d", amount: 10 }),
+    profileWrite("PUT", { id: "n1", description: "d (rewritten 2)", amount: 20 }),
+  ];
+  assert.deepEqual(maskRepeats(writes, {}), { entries: writes, maskedFields: [], rewordedFields: [] });
+});
+
+test("a reworded value inside JSON held in a string is recognized", () => {
+  const writes = [
+    profileWrite("PUT", { id: "n1", payload: JSON.stringify({ text: "x" }) }),
+    profileWrite("PUT", { id: "n1", payload: JSON.stringify({ text: "x (rewritten 2)" }) }),
+  ];
+  const masked = maskRepeats(writes, {});
+  assert.deepEqual(masked.entries, [writes[0], { ...writes[1], stateChange: false, benign: REWORDED_REPEAT }]);
+  assert.deepEqual(masked.rewordedFields, ["payload"]);
+});
+
+test("analyzeCell reports the reworded fields of a fresh cell", () => {
+  const volatile = { [PROFILE_PUT]: ["updatedAt"] };
+  const writes = [
+    profileWrite("PUT", { noteId: "n1", description: "d", updatedAt: "t1" }),
+    profileWrite("PUT", { noteId: "n1", description: "d (rewritten 2)", updatedAt: "t2" }),
+  ];
+  const fresh = cellOf("post-effect-fast-fresh");
+  const v = analyzeCell(fresh, crashRun({ cellId: fresh.id, idMode: "fresh", ledger: [catalogEntry(), ...writes] }), profileBase(volatile), {});
+  assert.equal(v.kind, "clean");
+  assert.equal(v.benignRepeats, 1);
+  assert.deepEqual(v.rewordedFields, ["description"]);
+  assert.deepEqual(v.maskedFields, ["updatedAt"]);
+
+  const stamped = [profileWrite("PUT", { noteId: "n1", updatedAt: "t1" }), profileWrite("PUT", { noteId: "n1", updatedAt: "t2" })];
+  const plain = analyzeCell(fresh, crashRun({ cellId: fresh.id, idMode: "fresh", ledger: stamped }), profileBase(volatile), {});
+  assert.equal(plain.kind, "clean");
+  assert.equal("rewordedFields" in plain, false);
+});
+
 test("a field that varies on another endpoint does not mask this one", () => {
   const volatile = { [PROFILE_POST]: ["updatedAt"] };
   const writes = [profileWrite("PUT", { name: "Ada", updatedAt: "1" }), profileWrite("PUT", { name: "Ada", updatedAt: "2" })];
-  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [] });
+  assert.deepEqual(maskRepeats(writes, volatile), { entries: writes, maskedFields: [], rewordedFields: [] });
   const v = analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: writes }), profileBase(volatile), {});
   assert.equal(v.stateChanges, 2);
   assert.equal(v.kind, "dup");
@@ -738,18 +839,18 @@ test("a DELETE repeat is masked, a POST repeat never is", () => {
   const named = { object: "POST api.acme-store.test/v1/profiles/42" };
   const posts = [profileWrite("POST", { name: "Ada", sentAt: "1" }, named), profileWrite("POST", { name: "Ada", sentAt: "2" }, named)];
   const volatile = { [PROFILE_POST]: ["sentAt"] };
-  assert.deepEqual(maskRepeats(posts, volatile), { entries: posts, maskedFields: [] });
+  assert.deepEqual(maskRepeats(posts, volatile), { entries: posts, maskedFields: [], rewordedFields: [] });
   assert.equal(analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: posts }), profileBase(volatile, PROFILE_POST), {}).kind, "dup");
 });
 
 test("bodies that are not objects compare whole", () => {
   const volatile = { [PROFILE_PUT]: ["updatedAt"] };
   const differing = [profileWrite("PUT", "name=Ada;updatedAt=1"), profileWrite("PUT", "name=Ada;updatedAt=2")];
-  assert.deepEqual(maskRepeats(differing, volatile), { entries: differing, maskedFields: [] });
+  assert.deepEqual(maskRepeats(differing, volatile), { entries: differing, maskedFields: [], rewordedFields: [] });
   assert.equal(analyzeCell(cellOf("post-effect-fast-stable"), crashRun({ ledger: differing }), profileBase(volatile), {}).kind, "dup");
 
   const same = [profileWrite("PUT", "%PDF-1.7 profile"), profileWrite("PUT", "%PDF-1.7 profile")];
-  assert.deepEqual(maskRepeats(same, volatile), { entries: [same[0], { ...same[1], stateChange: false, benign: MASKED_REPEAT }], maskedFields: [] });
+  assert.deepEqual(maskRepeats(same, volatile), { entries: [same[0], { ...same[1], stateChange: false, benign: MASKED_REPEAT }], maskedFields: [], rewordedFields: [] });
 });
 
 test("entries that are already benign or not state changes are left as they are", () => {
@@ -762,5 +863,5 @@ test("entries that are already benign or not state changes are left as they are"
     entry({ ...profileFile, body: { name: "Ada", updatedAt: "1" } }),
     entry({ ...profileFile, body: { name: "Ada", updatedAt: "2" } }),
   ];
-  assert.deepEqual(maskRepeats(ledger, volatile), { entries: ledger, maskedFields: [] });
+  assert.deepEqual(maskRepeats(ledger, volatile), { entries: ledger, maskedFields: [], rewordedFields: [] });
 });

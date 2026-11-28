@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { MockModelResponder } from "eve/evals";
+import { withoutRewording } from "../../src/detect.ts";
 import { createResponder, type ResponderScript } from "../../templates/responder.ts";
 
 const PID = 4242;
@@ -69,6 +70,18 @@ test("fresh: replay gets a new id and rewritten text, identity unchanged", (t) =
       { name: "notify", id: `ct-call-2-${PID}`, input: { to: "alice", orderId: "o1", text: "Hi (rewritten 2)" } },
     ],
   });
+});
+
+test("a fresh replay's reworded input is the script input once withoutRewording strips it", (t) => {
+  const value = script("fresh", { input: { to: "alice", text: "Hi", description: "Order shipped" }, freeTextFields: ["text", "description"] });
+  const runDir = lab(t, value);
+  const respond = createResponder({ runDir, pid: PID });
+  respond(request());
+  const replay = respond(request());
+  assert.ok(typeof replay === "object");
+  const input = replay.toolCalls[0]!.input;
+  assert.notDeepEqual(input, value.input);
+  assert.deepEqual(withoutRewording(input), value.input);
 });
 
 test("fresh: only string free-text fields are rewritten", (t) => {

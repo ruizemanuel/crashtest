@@ -12,6 +12,7 @@ test("smoke: discover the zoo", { timeout: 900_000 }, async () => {
     "benign_labels",
     "blob_default",
     "blob_overwrite",
+    "blob_reworded",
     "callid_guard",
     "check_before_act",
     "fs_effect",

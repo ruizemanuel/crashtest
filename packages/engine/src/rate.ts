@@ -1,6 +1,6 @@
 // Turns the verdicts of a tool's cells into its star rating and the fixed report copy, then the tool ratings into
 // the agent's rating. Pure: the copy below is the product's wording, not generated text.
-import { REDACTED_FIELD, hostOfEndpoint } from "./detect.ts";
+import { REDACTED_FIELD, REWORDED_TEXT, hostOfEndpoint } from "./detect.ts";
 import { crashCells } from "./matrix.ts";
 import { hostSupportsIdempotency, hostSupportsLookup } from "./preload/catalog.ts";
 import type { CellVerdict, EffectEvidence, NaReason, Stars, ToolRating } from "./types.ts";
@@ -180,18 +180,24 @@ function assumedKeyNote(cells: CellVerdict[]): string {
 }
 
 /**
- * What a rating that rests on repeated writes counted as benign because they changed only varying fields, or only a
- * redacted field, must say. True for a host the lab assumes to overwrite and for Vercel Blob, whose overwrite it models.
+ * What a rating that rests on repeated writes counted as benign must say, when they differed from the earlier write in
+ * varying fields, a redacted field, or text the lab reworded for the replay. True for a host the lab assumes to
+ * overwrite and for Vercel Blob, whose overwrite it models.
  */
 function maskedNote(cells: CellVerdict[]): string {
   const fields = [...new Set(cells.flatMap((cell) => cell.maskedFields ?? []))].sort();
-  if (fields.length === 0) return "";
+  const reworded = [...new Set(cells.flatMap((cell) => cell.rewordedFields ?? []))].sort();
+  if (fields.length === 0 && reworded.length === 0) return "";
   const visible = fields.filter((field) => field !== REDACTED_FIELD);
+  const rewordedKeys = reworded.filter((field) => field !== REWORDED_TEXT);
+  const ticked = (names: string[]): string => namedList(names.map((name) => `\`${name}\``));
   const differences = [
-    ...(visible.length === 0 ? [] : [`${namedList(visible.map((field) => `\`${field}\``))}, which ${visible.length === 1 ? "varies" : "vary"} between the baselines`]),
+    ...(visible.length === 0 ? [] : [`${ticked(visible)}, which ${visible.length === 1 ? "varies" : "vary"} between the baselines`]),
     ...(fields.includes(REDACTED_FIELD) ? [`${REDACTED_FIELD}, whose values the ledger does not keep`] : []),
+    ...(rewordedKeys.length === 0 ? [] : [`${ticked(rewordedKeys)}, whose text the lab reworded for the replay`]),
+    ...(reworded.includes(REWORDED_TEXT) ? [`${REWORDED_TEXT}, which the lab reworded for the replay`] : []),
   ];
-  return ` A repeated write went to the same object and differed only in ${differences.join(", or only in ")}; the lab counts the later write as an overwrite of that object, not a second effect.`;
+  return ` A repeated write went to the same object and differed only in ${differences.join(", or in ")}; the lab counts the later write as an overwrite of that object, not a second effect.`;
 }
 
 /**

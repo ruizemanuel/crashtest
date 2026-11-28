@@ -86,6 +86,14 @@ test("zoo: blob_overwrite rates 5 stars with benign repeats", E2E, async (t) => 
   assert.equal(result.rating.benignRepeats, true, detail);
 });
 
+test("zoo: blob_reworded rates 5 stars: the reworded replay overwrites the same object", E2E, async (t) => {
+  const { result, detail } = await lane(t, "blob_reworded");
+  assert.equal(result.rating.stars, 5, detail);
+  assert.equal(result.rating.benignRepeats, true, detail);
+  assert.match(result.rating.summary, /`description`, whose text the lab reworded for the replay/, detail);
+  assert.match(result.rating.summary, /`updatedAt`, which varies between the baselines/, detail);
+});
+
 test("zoo: blob_default rates 4 stars: the replay is refused after the upload happened", E2E, async (t) => {
   const { result, detail } = await lane(t, "blob_default");
   assert.equal(result.rating.stars, 4, detail);

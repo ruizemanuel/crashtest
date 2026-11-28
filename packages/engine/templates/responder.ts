@@ -97,6 +97,7 @@ function outputText(output: unknown): string {
   return text.slice(0, ERROR_CHARS);
 }
 
+// detect.ts (`REWORDING`) strips this marker, so its format is part of the rating rule.
 function perturb(input: Record<string, unknown>, fields: readonly string[], emits: number): Record<string, unknown> {
   const out = { ...input };
   for (const key of fields) {

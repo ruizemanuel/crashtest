@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REDACTED_FIELD } from "../../src/detect.ts";
+import { REDACTED_FIELD, REWORDED_TEXT } from "../../src/detect.ts";
 import { rateAgent, rateTool } from "../../src/rate.ts";
 import type { CellVerdict, ToolRating } from "../../src/types.ts";
 import { REFUNDS, verdict } from "./builders.ts";
@@ -144,7 +144,27 @@ test("a repeat that differed only in a redacted field is named without a field n
   ]);
   assert.match(
     both.summary,
-    / differed only in `updatedAt`, which varies between the baselines, or only in a redacted field, whose values the ledger does not keep; the lab counts the later write as an overwrite of that object, not a second effect\.$/,
+    / differed only in `updatedAt`, which varies between the baselines, or in a redacted field, whose values the ledger does not keep; the lab counts the later write as an overwrite of that object, not a second effect\.$/,
+  );
+});
+
+test("the masked-repeat note names reworded fields next to varying ones", () => {
+  const rating = rate([verdict({ benignRepeats: 1, maskedFields: ["updatedAt"], rewordedFields: ["description"] })]);
+  assert.equal(rating.stars, 5);
+  assert.equal(
+    rating.summary,
+    "One state change in every cell; repeated requests did not change provider state. A repeated write went to the same object and differed only in `updatedAt`, which varies between the baselines, or in `description`, whose text the lab reworded for the replay; the lab counts the later write as an overwrite of that object, not a second effect.",
+  );
+  const two = rate([verdict({ benignRepeats: 1, rewordedFields: ["description", "markdown"] })]);
+  assert.match(two.summary, / differed only in `description` and `markdown`, whose text the lab reworded for the replay; /);
+});
+
+test("a reworded text body is named as the body text", () => {
+  const rating = rate([verdict({ benignRepeats: 1, rewordedFields: [REWORDED_TEXT] })]);
+  assert.equal(rating.stars, 5);
+  assert.match(
+    rating.summary,
+    / A repeated write went to the same object and differed only in the body text, which the lab reworded for the replay; the lab counts the later write as an overwrite of that object, not a second effect\.$/,
   );
 });
 
@@ -314,6 +334,8 @@ test("user-facing copy never claims a tool is verified or safe", () => {
     rate([verdict({ benignRepeats: 2 })]),
     rate([verdict({ benignRepeats: 1, maskedFields: ["updatedAt"], assumedKeyHosts: ["api.acme.test"] })]),
     rate([verdict({ benignRepeats: 1, maskedFields: [REDACTED_FIELD, "id", "sentAt"] })]),
+    rate([verdict({ benignRepeats: 1, maskedFields: ["updatedAt"], rewordedFields: ["description"] })]),
+    rate([verdict({ benignRepeats: 1, rewordedFields: [REWORDED_TEXT] })]),
     rate([], {}),
   ];
   for (const rating of all) assert.doesNotMatch(`${rating.summary} ${rating.recommendation}`, /verified|safe/i);

@@ -28,6 +28,32 @@ export const MASKED_REPEAT = "same object written again; only fields that vary b
  */
 export const REDACTED_FIELD = "a redacted field";
 
+/**
+ * The marker the lab's responder appends to a free-text field when the fresh-id and retry cells reword it
+ * (`templates/responder.ts`, `perturb`). A `g` regex: use it only with `replace`, which does not keep its state.
+ */
+export const REWORDING = / \(rewritten \d+\)/g;
+
+/**
+ * The benign label of a repeated write to one object whose body differs from the earlier write only in text the lab
+ * reworded for the replay, and possibly in fields that vary between the baselines.
+ */
+export const REWORDED_REPEAT = "same object written again with text the lab reworded for the replay";
+
+/** What `rewordedFields` records when the reworded body is not a JSON object, such as a text or Markdown body. */
+export const REWORDED_TEXT = "the body text";
+
+/**
+ * A copy of `value` with the lab's rewording marker (`REWORDING`) removed from every string, at any depth of arrays
+ * and objects: inside JSON held in a string too, since the marker is plain text there. Keys stay as they are.
+ */
+export function withoutRewording(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(REWORDING, "");
+  if (Array.isArray(value)) return value.map(withoutRewording);
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withoutRewording(inner)]));
+  return value;
+}
+
 /** The methods whose repeat to one object overwrites it rather than adding to it. */
 const OVERWRITES = new Set(["PUT", "DELETE"]);
 
@@ -162,24 +188,40 @@ function applied(entry: LedgerEntry): boolean {
  * fixture answered, gives no ground to assume an overwrite and stays a state change. The order is kept and the input
  * is not mutated. `maskedFields` lists the volatile keys whose values did differ in those pairs, and
  * `REDACTED_FIELD` for a pair whose bodies differ in no key but hold a redacted value.
+ *
+ * A pair whose bodies are the same only once the lab's rewording is also stripped (`withoutRewording`) is a benign
+ * repeat too, labeled `REWORDED_REPEAT`: the fresh-id and retry cells reworded the call's free text, and the service
+ * overwrites the object with it. `rewordedFields` lists the other keys whose values differed in those pairs, or
+ * `REWORDED_TEXT` for a body that is not an object.
  */
-export function maskRepeats(entries: LedgerEntry[], volatile: Record<string, string[]>): { entries: LedgerEntry[]; maskedFields: string[] } {
+export function maskRepeats(
+  entries: LedgerEntry[],
+  volatile: Record<string, string[]>,
+): { entries: LedgerEntry[]; maskedFields: string[]; rewordedFields: string[] } {
   const maskedFields: string[] = [];
+  const rewordedFields: string[] = [];
   const masked = entries.map((entry, index) => {
     const { object } = entry;
     if (object === undefined || entry.kind !== "http" || !entry.stateChange || !OVERWRITES.has(entry.method)) return entry;
     const skip = Object.hasOwn(volatile, entry.endpoint) ? (volatile[entry.endpoint] ?? []) : [];
-    const body = canonical(withoutKeys(entry.body, skip));
+    const unreworded = (body: unknown): string => canonical(withoutRewording(withoutKeys(body, skip)));
+    const body = unreworded(entry.body);
     const earlier = entries
       .slice(0, index)
-      .findLast((candidate) => applied(candidate) && candidate.object === object && canonical(withoutKeys(candidate.body, skip)) === body);
+      .findLast((candidate) => applied(candidate) && candidate.object === object && unreworded(candidate.body) === body);
     if (earlier === undefined) return entry;
     const differing = differingKeys(earlier.body, entry.body);
-    const hidden = differing.length === 0 && (holdsRedacted(earlier.body) || holdsRedacted(entry.body));
-    maskedFields.push(...(hidden ? [REDACTED_FIELD] : differing));
-    return { ...entry, stateChange: false, benign: MASKED_REPEAT };
+    if (canonical(withoutKeys(earlier.body, skip)) === canonical(withoutKeys(entry.body, skip))) {
+      const hidden = differing.length === 0 && (holdsRedacted(earlier.body) || holdsRedacted(entry.body));
+      maskedFields.push(...(hidden ? [REDACTED_FIELD] : differing));
+      return { ...entry, stateChange: false, benign: MASKED_REPEAT };
+    }
+    maskedFields.push(...differing.filter((key) => skip.includes(key)));
+    const objects = isRecord(earlier.body) && isRecord(entry.body);
+    rewordedFields.push(...(objects ? differing.filter((key) => !skip.includes(key)) : [REWORDED_TEXT]));
+    return { ...entry, stateChange: false, benign: REWORDED_REPEAT };
   });
-  return { entries: masked, maskedFields: sortedUnique(maskedFields) };
+  return { entries: masked, maskedFields: sortedUnique(maskedFields), rewordedFields: sortedUnique(rewordedFields) };
 }
 
 // --- calls ----------------------------------------------------------------------------------------------------
@@ -398,7 +440,7 @@ export function analyzeCell(
     cell.point === "none" ? "none" : calls.some((candidate) => candidate.outcome === "abandoned") ? "interrupted" : "replayed";
   const { outcome, error } = outcomeOf(calls);
 
-  const { entries: mutating, maskedFields } = maskRepeats(mutatingEntries(run, config), base.volatileByEndpoint);
+  const { entries: mutating, maskedFields, rewordedFields } = maskRepeats(mutatingEntries(run, config), base.volatileByEndpoint);
   const counts = stateChangeCounts(mutating);
   const evidence = evidenceFor(groupByEndpoint(mutating), counts, base.expected, new Set([...base.volatileFields, "callId"]));
   const stateChanges = sum(counts.values());
@@ -431,5 +473,6 @@ export function analyzeCell(
     evidence,
     ...(assumedKeyHosts.length > 0 ? { assumedKeyHosts } : {}),
     ...(maskedFields.length > 0 ? { maskedFields } : {}),
+    ...(rewordedFields.length > 0 ? { rewordedFields } : {}),
   };
 }

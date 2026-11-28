@@ -41,6 +41,12 @@ export interface CellVerdict {
    * redacted field.
    */
   maskedFields?: string[];
+  /**
+   * The top-level body keys whose values differed only by text the lab reworded for the replay in a repeated write to
+   * the same object, which therefore counted as a benign repeat; `REWORDED_TEXT` (detect.ts) when the body was not an
+   * object.
+   */
+  rewordedFields?: string[];
 }
 export type NaReason = "no-effect" | "baseline-failed" | "baseline-unstable" | "cells-invalid" | "not-discovered";
 export type Stars = 1 | 2 | 3 | 4 | 5;
